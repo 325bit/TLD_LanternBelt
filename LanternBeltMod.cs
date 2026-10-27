@@ -40,6 +40,23 @@ public class LanternBeltMod : MelonMod
 
 		LoggerInstance.Msg($"{BuildInfo.GUIName} {BuildInfo.Version} 已加载"
 			+ $"（挂起键={settings?.HolsterKey}，开关灯键={settings?.LampKey}）");
+
+		try
+		{
+			HarmonyInstance.PatchAll();
+
+			int patched = 0;
+			foreach (System.Reflection.MethodBase _ in HarmonyInstance.GetPatchedMethods())
+			{
+				patched++;
+			}
+
+			LoggerInstance.Msg($"Harmony 补丁已应用，共 {patched} 个方法");
+		}
+		catch (Exception ex)
+		{
+			LoggerInstance.Error("应用 Harmony 补丁失败，挂腰功能不会生效：" + ex);
+		}
 	}
 
 	public override void OnSceneWasLoaded(int buildIndex, string sceneName)

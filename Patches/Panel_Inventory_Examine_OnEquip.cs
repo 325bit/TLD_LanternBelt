@@ -27,9 +27,7 @@ internal static class Panel_Inventory_Examine_OnEquip
 			return true;
 		}
 
-		LanternBeltManager.ToggleHolster(gi);
-
-		// 吞掉原版「拿到手上」，否则刚挂上就被卸下来
-		return false;
+		// 挂腰成功才吞掉原版「拿到手上」，失败时退回原版行为，别让玩家点了没反应
+		return !LanternBeltManager.ToggleHolster(gi);
 	}
 }

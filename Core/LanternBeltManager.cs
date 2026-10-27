@@ -104,16 +104,16 @@ internal static class LanternBeltManager
 		}
 	}
 
-	/// <summary>装备栏 / 快捷键的统一入口：已挂就收起，没挂就挂上。</summary>
-	internal static void ToggleHolster(GearItem gi)
+	/// <summary>装备栏 / 快捷键的统一入口：已挂就收起，没挂就挂上。返回 true 表示已经处理。</summary>
+	internal static bool ToggleHolster(GearItem gi)
 	{
 		if (IsHungLantern(gi))
 		{
 			Unhang();
-			return;
+			return true;
 		}
 
-		Hang(gi);
+		return Hang(gi);
 	}
 
 	/// <summary>快捷键入口：有挂着的就收起，否则在背包里找一盏提灯挂上。</summary>
@@ -135,11 +135,11 @@ internal static class LanternBeltManager
 		Hang(found);
 	}
 
-	internal static void Hang(GearItem gi)
+	internal static bool Hang(GearItem gi)
 	{
 		if (gi == null || !IsLantern(gi))
 		{
-			return;
+			return false;
 		}
 
 		if (s_hung != null)
@@ -154,7 +154,7 @@ internal static class LanternBeltManager
 		if (!CaptureOriginal(gi))
 		{
 			LogError("记录原始摆放失败，放弃挂腰");
-			return;
+			return false;
 		}
 
 		s_origWasInHands = inHands;
@@ -190,6 +190,7 @@ internal static class LanternBeltManager
 		ModLog.Msg($"[挂腰] {Describe(gi)} 原始父节点={(s_origParent == null ? "<无>" : s_origParent.name)} 原先active={s_origActive}");
 
 		Notify(Loc.HangOn);
+		return true;
 	}
 
 	internal static void Unhang(bool quiet = false)
