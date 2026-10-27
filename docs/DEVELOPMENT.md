@@ -129,6 +129,26 @@
 
 驱动：`MelonMod.OnUpdate` → `LanternBeltManager.Tick()`（每帧）+ `OnSceneWasLoaded` → 允许一次自动恢复。
 
+### 跨场景 / 读档恢复（SaveLedger）
+
+早期实现是「猜」的：原版把灯亮灭写进 `KeroseneLampItemSaveDataProxy.m_OnProxy`，而卸下必然熄灯，
+所以「背包里有一盏点着的提灯」被当成挂腰的证据。**这条路在玩家熄灯后出门时会彻底失效**
+（实测 19:55:12 熄灯 → 19:55:19 换场景 → 日志里没有任何恢复记录），挂腰状态凭空消失。
+
+现在用 `ModData` 明确记录，写法照 `HuntingRoads/SaveLedger.cs`：
+
+```csharp
+private static readonly ModDataManager s_data = new ModDataManager("LanternBelt", false);
+s_data.Save("1|GEAR_KeroseneLamp_Spelunkers|0.734|0");   // 挂腰|物品名|燃油比例|亮着
+```
+
+- 记录时机：`Hang` 成功、`L` 切灯、油尽自动熄灭、原版 `Toggle` 同步之后。
+- 清除时机：`Unhang`（手动卸下 / 丢弃 / 进容器）。
+- 恢复时机：`OnSceneWasLoaded` 开 30 秒窗口，每 2 秒试一次；先按记录找灯
+  （名字 + 燃油比例最接近），找不到才退回旧的「点着灯」猜测。
+- **主菜单与 `Empty` 场景必须跳过早退**，否则退到主菜单等满一个窗口会把记录当成
+  「找不到那盏灯」清掉，再进世界就恢复不了。
+
 ## 6. 挂点
 
 蹲下补偿：挂点挂在玩家根节点（脚底）上，是固定高度，所以蹲下时提灯会悬在原来的腰位。

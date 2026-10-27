@@ -222,7 +222,7 @@ internal static class LanternBeltManager
 		return false;
 	}
 
-	internal static bool Hang(GearItem gi)
+	internal static bool Hang(GearItem gi, bool? forcedLit = null)
 	{
 		if (gi == null || !IsLantern(gi))
 		{
@@ -268,7 +268,9 @@ internal static class LanternBeltManager
 		SuspendPhysics(gi);
 
 		s_hung = gi;
-		s_wantLit = Cfg?.LightOnHang ?? true;
+
+		// 从存档恢复时按「当时是亮还是灭」还原，不要用设置覆盖玩家上次的选择
+		s_wantLit = forcedLit ?? (Cfg?.LightOnHang ?? true);
 
 		Apply(force: true);
 
@@ -280,6 +282,8 @@ internal static class LanternBeltManager
 
 		ReconcileLamp(gi, playerInitiated: true);
 
+		SaveLedger.SaveHung(gi, s_wantLit);
+
 		Notify(Loc.HangOn);
 		return true;
 	}
@@ -290,6 +294,7 @@ internal static class LanternBeltManager
 		if (gi == null)
 		{
 			ClearState();
+			SaveLedger.Clear();
 			return;
 		}
 
@@ -325,6 +330,7 @@ internal static class LanternBeltManager
 		ResumePhysics(gi);
 
 		ClearState();
+		SaveLedger.Clear();
 
 		if (!quiet)
 		{
@@ -343,6 +349,7 @@ internal static class LanternBeltManager
 		s_wantLit = !s_wantLit;
 
 		ReconcileLamp(s_hung, playerInitiated: true);
+		SaveLedger.SaveHung(s_hung, s_wantLit);
 
 		if (Cfg?.Verbose ?? false)
 		{
@@ -403,6 +410,7 @@ internal static class LanternBeltManager
 			}
 
 			s_wantLit = current.IsOn();
+			SaveLedger.SaveHung(gi, s_wantLit);
 		}
 		catch
 		{
@@ -439,6 +447,16 @@ internal static class LanternBeltManager
 			{
 				ClearState();
 			}
+		}
+
+		// 主菜单 / 加载壳不参与恢复：否则退到主菜单等满一个窗口，
+		// 会把存档记录当成「找不到那盏灯」清掉，再进世界就恢复不了了。
+		if (string.IsNullOrEmpty(sceneName)
+			|| sceneName.StartsWith("MainMenu", StringComparison.OrdinalIgnoreCase)
+			|| sceneName == "Empty")
+		{
+			s_restoreDeadline = 0f;
+			return;
 		}
 
 		s_nextRestoreTime = 0f;
@@ -810,6 +828,7 @@ internal static class LanternBeltManager
 			if (fuel <= 0.0001f)
 			{
 				s_wantLit = false;
+				SaveLedger.SaveHung(gi, false);
 				Notify(Loc.NoFuel);
 				return;
 			}
@@ -1125,8 +1144,11 @@ internal static class LanternBeltManager
 	}
 
 	/// <summary>
-	/// 读档恢复：原版把「灯是点着的」写进存档（KeroseneLampItemSaveDataProxy.m_OnProxy），
-	/// 而卸下必然熄灯，所以「背包里有一盏点着的提灯」只可能来自挂腰状态——据此还原，不必额外写存档标记。
+	/// 换场景 / 读档后把提灯挂回去。
+	///
+	/// 优先按 <see cref="SaveLedger"/> 里明确记录恢复——灯当时是灭的就恢复成灭的。
+	/// 早期版本靠「背包里有一盏点着的提灯」反推，玩家熄灯后出门就再也猜不出来（实测丢状态），
+	/// 所以那条只剩兜底作用，服务没有记录的老存档。
 	/// </summary>
 	private static void MaybeAutoRestore()
 	{
@@ -1145,7 +1167,21 @@ internal static class LanternBeltManager
 
 		if (now > s_restoreDeadline)
 		{
+			// 等满一整个窗口还没落位：记录作废，免得之后每次进场景都白等一轮
 			s_restoreDeadline = 0f;
+
+			if (GameManager.GetPlayerTransform() == null)
+			{
+				// 世界还没起来（加载中 / 退到主菜单），记录留着
+				return;
+			}
+
+			if (SaveLedger.TryLoad(out _, out _, out _))
+			{
+				SaveLedger.Clear();
+				ModLog.Msg("[挂腰] 等不到上次挂腰的那盏提灯，已作废记录");
+			}
+
 			return;
 		}
 
@@ -1154,6 +1190,24 @@ internal static class LanternBeltManager
 			return;
 		}
 
+		// ① 有明确记录：照记录恢复，灯亮灭也照旧
+		if (SaveLedger.TryLoad(out string recordedName, out float recordedFuel, out bool recordedLit))
+		{
+			GearItem? recorded = FindLantern(recordedName, recordedFuel);
+			if (recorded == null || IsInHands(recorded))
+			{
+				// 场景反序列化有延迟，下一拍再看
+				return;
+			}
+
+			s_restoreDeadline = 0f;
+			ModLog.Msg($"[挂腰] 按存档记录恢复悬挂（{SaveLedger.ItemName(recorded)}，灯{(recordedLit ? "亮" : "灭")}）");
+
+			Hang(recorded, recordedLit);
+			return;
+		}
+
+		// ② 老存档没有记录：退回「背包里点着灯」的猜测
 		GearItem? lit = FindLanternInInventory(preferLit: true);
 		if (lit == null || !IsLantern(lit) || IsInHands(lit) || !lit.m_KeroseneLampItem.IsOn())
 		{
@@ -1165,6 +1219,61 @@ internal static class LanternBeltManager
 		ModLog.Msg("[挂腰] 检测到背包里有点着的提灯，自动恢复挂腰");
 
 		Hang(lit);
+	}
+
+	/// <summary>
+	/// 按「物品名 + 燃油比例」在背包里认出上次那盏灯。
+	/// 同型号多盏时取燃油最接近的；名字对不上也允许（不同世界的同名提灯），只是排序靠后。
+	/// </summary>
+	private static GearItem? FindLantern(string itemName, float fuel)
+	{
+		try
+		{
+			Inventory? inv = GameManager.GetInventoryComponent();
+			if (inv == null || inv.m_Items == null)
+			{
+				return null;
+			}
+
+			GearItem? best = null;
+			float bestScore = float.MaxValue;
+			int count = inv.m_Items.Count;
+
+			for (int i = 0; i < count; i++)
+			{
+				GearItem gi = inv.m_Items[i];
+				if (gi == null || !IsLantern(gi))
+				{
+					continue;
+				}
+
+				float score = 0f;
+
+				if (!string.IsNullOrEmpty(itemName) && SaveLedger.ItemName(gi) != itemName)
+				{
+					score += 1000f;
+				}
+
+				float f = SaveLedger.FuelFraction(gi);
+				if (fuel >= 0f && f >= 0f)
+				{
+					score += Mathf.Abs(f - fuel) * 100f;
+				}
+
+				if (score < bestScore)
+				{
+					bestScore = score;
+					best = gi;
+				}
+			}
+
+			return best;
+		}
+		catch (Exception ex)
+		{
+			LogError("按记录查找提灯失败：" + ex.Message);
+			return null;
+		}
 	}
 
 	// ────────────────────────── 工具 ──────────────────────────

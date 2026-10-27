@@ -22,9 +22,13 @@
   <ItemGroup>
     <!-- 游戏类型全部落在 Il2Cpp / Il2CppTLD 命名空间，省掉每个文件的 using -->
     <Using Include="Il2Cpp" />
-    <!-- 只额外引实机在跑的 ModSettings.dll，不复制进输出 -->
+    <!-- 只额外引实机在跑的 ModSettings.dll / ModData.dll，不复制进输出 -->
     <Reference Include="ModSettings">
       <HintPath>$(TheLongDarkPath)\Mods\ModSettings.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ModData">
+      <HintPath>$(TheLongDarkPath)\Mods\ModData.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>
