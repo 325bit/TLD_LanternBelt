@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Il2CppTLD.Gear;
 using MelonLoader;
 using UnityEngine;
@@ -7,32 +8,40 @@ using Object = UnityEngine.Object;
 namespace LanternBelt.Core;
 
 /// <summary>
-/// 挂腰状态机 + 每帧校正。
+/// 挂腰状态机：把背包里那盏提灯搬到腰上，并保持它「亮着、发热、看得见」。
 ///
-/// 机制依据（2.55 实机反汇编，勿凭印象改）：
-/// · <c>PlayerManager.EquipItem</c> 在换手时会调 <c>KeroseneLampItem.TurnOff</c>，
-///   所以「卸下」必然熄灯，挂腰后必须由我们自己重新点亮。
-/// · <c>KeroseneLampItem.Update</c> 只认自己的 <c>m_On</c> / <c>m_FlareIsPaused</c>，
-///   不检查是否在手——只要物体 active 就会继续烧油、继续发光。这是挂腰可行的前提。
-/// · <c>KeroseneLampItem.Toggle</c> 带 <c>PlayerAnimation.FirstPersonHandsEnabled</c> 等一整串
-///   前置判断，离手状态下调用会被拦掉；因此开关灯一律走 <c>TurnOn(bool)</c> / <c>TurnOff(bool)</c>。
+/// 机制依据（2.55 反汇编，勿凭印象改）：
+/// · <c>KeroseneLampItem.TurnOn</c> 内部会对自己的 <c>HeatSource</c> 调 <c>TurnOn</c>、
+///   把 <c>m_On</c> 置位；<c>Update</c> 只认 <c>m_On</c> / <c>m_FlareIsPaused</c>，不看是否在手。
+/// · 但 <c>HeatSource.TurnOn</c> 是**自己往 <c>HeatSourceManager.m_HeatSources</c> 里注册**的
+///   （列表 AddWithResize）。灯一旦离场被移除，重新 SetActive 不会补注册，所以必须手动登记，
+///   否则「有光没热」。
+/// · 背包里的物品渲染器是关着的（<c>GearItem.m_MeshRenderers</c> / <c>m_IsHidden</c> 决定），
+///   只把 GameObject 激活并不会让它显形，必须逐个打开 Renderer 并把层设回主相机可见层。
+/// · <c>PlayerManager.EquipItem</c> 只会熄灭**手上**那件物品，不会碰背包里的灯，
+///   所以挂腰与手持枪 / 信号棒互不影响。
 /// </summary>
 internal static class LanternBeltManager
 {
-	private const float RestoreIntervalSeconds = 2f;
-
 	/// <summary>进场景后等多久还找不到点着的提灯就放弃恢复（存档反序列化有延迟）。</summary>
 	private const float RestoreWindowSeconds = 30f;
 
+	private const float RestoreIntervalSeconds = 2f;
+
 	private const float ErrorLogIntervalSeconds = 15f;
 
-	/// <summary>当前挂在腰上的提灯；null 表示没有。</summary>
+	private const string KeyPrefix = "LANTERNBELT_";
+
+	// ────────────────────────── 运行状态 ──────────────────────────
+
 	private static GearItem? s_hung;
 
-	/// <summary>我们自建的挂点（玩家根节点或相机下的一个空物体）。</summary>
 	private static Transform? s_anchor;
 
-	// —— 挂起前的原始摆放，收起时原样还回去，避免污染游戏自己的对象池 ——
+	/// <summary>我们希望的点燃状态；实际状态每帧向它靠拢。</summary>
+	private static bool s_wantLit;
+
+	// —— 挂腰前的原始摆放，收起时原样还回去 ——
 	private static Transform? s_origParent;
 	private static Vector3 s_origLocalPos;
 	private static Quaternion s_origLocalRot;
@@ -44,15 +53,19 @@ internal static class LanternBeltManager
 	private static bool s_hadRigidbody;
 	private static bool s_origKinematic;
 
-	/// <summary>自动恢复的截止时刻（Time.unscaledTime）；0 表示当前不需要恢复。</summary>
+	// —— 我们打开过的渲染器，收起时按原样恢复 ——
+	private static readonly List<Renderer> s_renderers = new List<Renderer>();
+	private static readonly List<bool> s_rendererWasEnabled = new List<bool>();
+	private static bool s_renderStaged;
+	private static bool s_noMeshLogged;
+
+	private static HeatSource? s_heat;
+
 	private static float s_restoreDeadline;
-
-	/// <summary>我们希望的点燃状态；实际状态每帧向它靠拢。</summary>
-	private static bool s_wantLit;
-
 	private static float s_nextRestoreTime;
 	private static bool s_anchorMissingLogged;
 	private static float s_nextErrorLogTime;
+	private static bool s_diagLogged;
 
 	internal static bool HasHungLantern
 	{
@@ -69,6 +82,8 @@ internal static class LanternBeltManager
 		get { return LanternBeltMod.settings; }
 	}
 
+	// ────────────────────────── 查询 ──────────────────────────
+
 	internal static bool IsHungLantern(GearItem? gi)
 	{
 		if (gi == null || s_hung == null)
@@ -79,6 +94,24 @@ internal static class LanternBeltManager
 		try
 		{
 			return gi.Pointer == s_hung.Pointer;
+		}
+		catch
+		{
+			return false;
+		}
+	}
+
+	internal static bool IsHungLantern(GameObject? go)
+	{
+		if (go == null || s_hung == null)
+		{
+			return false;
+		}
+
+		try
+		{
+			GameObject self = s_hung.gameObject;
+			return self != null && self.Pointer == go.Pointer;
 		}
 		catch
 		{
@@ -104,7 +137,27 @@ internal static class LanternBeltManager
 		}
 	}
 
-	/// <summary>装备栏 / 快捷键的统一入口：已挂就收起，没挂就挂上。返回 true 表示已经处理。</summary>
+	private static bool IsInHands(GearItem gi)
+	{
+		try
+		{
+			PlayerManager? pm = GameManager.GetPlayerManagerComponent();
+			if (pm == null || pm.m_ItemInHands == null)
+			{
+				return false;
+			}
+
+			return pm.m_ItemInHands.Pointer == gi.Pointer;
+		}
+		catch
+		{
+			return false;
+		}
+	}
+
+	// ────────────────────────── 入口 ──────────────────────────
+
+	/// <summary>物品栏「挂腰 / 收起」按钮的统一入口。返回 true 表示已经处理，调用方应吞掉原版装备。</summary>
 	internal static bool ToggleHolster(GearItem gi)
 	{
 		if (IsHungLantern(gi))
@@ -114,25 +167,6 @@ internal static class LanternBeltManager
 		}
 
 		return Hang(gi);
-	}
-
-	/// <summary>快捷键入口：有挂着的就收起，否则在背包里找一盏提灯挂上。</summary>
-	internal static void ToggleHolsterFromHotkey()
-	{
-		if (s_hung != null)
-		{
-			Unhang();
-			return;
-		}
-
-		GearItem? found = FindLanternInInventory(preferLit: true);
-		if (found == null)
-		{
-			Notify(Loc.NoLantern);
-			return;
-		}
-
-		Hang(found);
 	}
 
 	internal static bool Hang(GearItem gi)
@@ -150,25 +184,12 @@ internal static class LanternBeltManager
 
 		bool inHands = IsInHands(gi);
 
-		// 先记原始状态，再动手——挂腰结束后要能原样还原
-		if (!CaptureOriginal(gi))
-		{
-			LogError("记录原始摆放失败，放弃挂腰");
-			return false;
-		}
-
-		s_origWasInHands = inHands;
-
 		if (inHands)
 		{
 			// 原版卸下路径会顺手熄灯，紧接着由 ReconcileLamp 重新点亮
 			try
 			{
-				PlayerManager? pm = GameManager.GetPlayerManagerComponent();
-				if (pm != null)
-				{
-					pm.UnequipItemInHands();
-				}
+				GameManager.GetPlayerManagerComponent()?.UnequipItemInHands();
 			}
 			catch (Exception ex)
 			{
@@ -176,74 +197,74 @@ internal static class LanternBeltManager
 			}
 		}
 
-		// 挂腰的灯必须静止：关掉碰撞、把刚体设成运动学，否则每帧设位置会和物理打架
+		// 卸下之后再记录：这时才是「回到背包」的真实摆放
+		if (!CaptureOriginal(gi))
+		{
+			LogError("记录原始摆放失败，放弃挂腰");
+			return false;
+		}
+
+		s_origWasInHands = inHands;
+		s_diagLogged = false;
+
 		SuspendPhysics(gi);
 
 		s_hung = gi;
 		s_wantLit = Cfg?.LightOnHang ?? true;
 
-		Apply();
+		Apply(force: true);
 
-		// 检视界面里 Apply 会提前返回，保证「挂上即点亮」不依赖面板是否打开
+		if (s_hung == null)
+		{
+			// Apply 发现物体已经不在背包里，退回原状——别点亮一盏已经离手的灯
+			return false;
+		}
+
 		ReconcileLamp(gi, playerInitiated: true);
-
-		ModLog.Msg($"[挂腰] {Describe(gi)} 原始父节点={(s_origParent == null ? "<无>" : s_origParent.name)} 原先active={s_origActive}");
 
 		Notify(Loc.HangOn);
 		return true;
 	}
 
-	internal static void Unhang(bool quiet = false)
+	internal static void Unhang(bool quiet = false, bool restoreActive = true)
 	{
 		GearItem? gi = s_hung;
+		if (gi == null)
+		{
+			ClearState();
+			return;
+		}
+
 		Transform? origParent = s_origParent;
 		Vector3 pos = s_origLocalPos;
 		Quaternion rot = s_origLocalRot;
 		Vector3 scale = s_origLocalScale;
-		bool origActive = s_origActive && !s_origWasInHands;
+		bool inHandsBefore = s_origWasInHands;
+		bool origActive = s_origActive;
 
-		ClearState();
-
-		if (gi != null)
+		try
 		{
-			try
+			var lamp = gi.m_KeroseneLampItem;
+			if (lamp != null && (Cfg?.ExtinguishOnUnhang ?? true) && lamp.IsOn())
 			{
-				var lamp = gi.m_KeroseneLampItem;
-				if (lamp != null && (Cfg?.ExtinguishOnUnhang ?? true) && lamp.IsOn())
-				{
-					lamp.TurnOff(true);
-				}
-
-				Transform t = gi.transform;
-				if (t != null)
-				{
-					if (origParent != null)
-					{
-						t.SetParent(origParent, false);
-					}
-					else
-					{
-						t.SetParent(null, false);
-					}
-
-					t.localPosition = pos;
-					t.localRotation = rot;
-					t.localScale = scale;
-				}
-
-				ResumePhysics(gi);
-
-				GameObject go = gi.gameObject;
-				if (go != null && !origActive)
-				{
-					go.SetActive(false);
-				}
+				lamp.TurnOff(true);
 			}
-			catch (Exception ex)
+
+			SetHeat(gi, false);
+		}
+		catch (Exception ex)
+		{
+			if (Cfg?.Verbose ?? false)
 			{
-				LogError("收起提灯时还原对象失败：" + ex.Message);
+				ModLog.Warning("收起时关灯失败：" + ex.Message);
 			}
 		}
+
+		RestoreRenderers();
+		RestoreTransform(gi, origParent, pos, rot, scale, restoreActive && (origActive || !inHandsBefore));
+		ResumePhysics(gi);
+
+		ClearState();
 
 		if (!quiet)
 		{
@@ -263,11 +284,10 @@ internal static class LanternBeltManager
 
 		ReconcileLamp(s_hung, playerInitiated: true);
 
-		// ReconcileLamp 可能因为没油把 s_wantLit 改回 false
 		Notify(s_wantLit ? Loc.LampOn : Loc.LampOff);
 	}
 
-	/// <summary>原版开关灯生效后，把我们的期望状态同步成实际状态（见 KeroseneLampItem_Toggle 补丁）。</summary>
+	/// <summary>原版开关灯生效后，把我们的期望状态同步成实际状态。</summary>
 	internal static void SyncWantLitFrom(KeroseneLampItem lamp)
 	{
 		GearItem? gi = s_hung;
@@ -297,7 +317,8 @@ internal static class LanternBeltManager
 		}
 	}
 
-	/// <summary>每帧：把提灯钉在挂点上，并把点燃状态拉回我们期望的值。</summary>
+	// ────────────────────────── 每帧 ──────────────────────────
+
 	internal static void Tick()
 	{
 		if (s_hung == null)
@@ -332,9 +353,9 @@ internal static class LanternBeltManager
 		ModLog.Msg($"[挂腰] 场景切换：{sceneName}");
 	}
 
-	// ────────────────────────── 内部实现 ──────────────────────────
+	// ────────────────────────── 摆放与显示 ──────────────────────────
 
-	private static void Apply()
+	private static void Apply(bool force = false)
 	{
 		GearItem? gi = s_hung;
 		if (gi == null)
@@ -354,20 +375,33 @@ internal static class LanternBeltManager
 			// 被拖进容器 / 丢在地上 / 移出背包：这盏灯已经和我们无关了，交给游戏
 			if (!gi.m_InPlayerInventory || gi.m_InsideContainer)
 			{
-				ClearState();
+				Unhang(quiet: true, restoreActive: false);
 				return;
 			}
 
-			// 检视界面把物品挪到检视空间，这时候别抢
+			// 玩家正在检视这盏灯时让位，别和面板抢物体
 			PlayerManager? pm = GameManager.GetPlayerManagerComponent();
-			if (pm != null && pm.GearItemBeingInspected() != null)
+			if (!force && pm != null)
 			{
-				return;
+				GearItem? inspected = pm.GearItemBeingInspected();
+				if (inspected != null && SameGear(inspected, gi))
+				{
+					return;
+				}
 			}
 
 			if (!go.activeSelf)
 			{
 				go.SetActive(true);
+
+				// 重新激活会把渲染器带回「背包里」的关闭状态，采集表也要重来
+				ResetRenderStage();
+			}
+
+			Transform? anchor = EnsureAnchor();
+			if (anchor == null)
+			{
+				return;
 			}
 
 			Transform t = gi.transform;
@@ -377,25 +411,27 @@ internal static class LanternBeltManager
 				return;
 			}
 
-			Transform? anchor = EnsureAnchor();
-			if (anchor == null)
+			if (t.parent != anchor)
 			{
-				return;
+				t.SetParent(anchor, false);
 			}
 
-			if ((Cfg?.FollowAnchor ?? true) || t.parent != anchor)
+			if (force || (Cfg?.FollowAnchor ?? true))
 			{
-				if (t.parent != anchor)
-				{
-					t.SetParent(anchor, false);
-				}
-
 				t.localPosition = Vector3.zero;
 				t.localRotation = Quaternion.identity;
-				t.localScale = Vector3.one * Mathf.Max(0.05f, Cfg?.Scale ?? 1f);
+				t.localScale = Vector3.one * Mathf.Clamp(Cfg?.Scale ?? 1f, 0.05f, 4f);
 			}
 
+			StageRenderers(gi);
+
 			ReconcileLamp(gi, playerInitiated: false);
+
+			if (!s_diagLogged && (Cfg?.Verbose ?? false))
+			{
+				s_diagLogged = true;
+				LogDiagnostics(gi, anchor);
+			}
 		}
 		catch (Exception ex)
 		{
@@ -403,38 +439,148 @@ internal static class LanternBeltManager
 		}
 	}
 
-	/// <summary>把实际点燃状态拉向 <see cref="s_wantLit"/>。原版卸下、油尽、动画延迟都靠这里兜住。</summary>
-	private static void ReconcileLamp(GearItem gi, bool playerInitiated)
+	/// <summary>
+	/// 把背包里那盏灯的渲染器全部打开，并把层设回主相机可见层。
+	/// 背包物品本来是不渲染的，只激活 GameObject 只会得到「有光没灯」。
+	/// </summary>
+	private static void StageRenderers(GearItem gi)
 	{
-		var lamp = gi.m_KeroseneLampItem;
-		if (lamp == null)
+		if (s_renderStaged)
 		{
 			return;
 		}
 
-		bool isOn = lamp.IsOn();
+		s_renderStaged = true;
+		s_renderers.Clear();
+		s_rendererWasEnabled.Clear();
 
-		if (!s_wantLit)
+		try
 		{
-			if (isOn)
+			GameObject go = gi.gameObject;
+			if (go == null)
 			{
-				lamp.TurnOff(!playerInitiated);
-			}
-
-			return;
-		}
-
-		if (!isOn)
-		{
-			float fuel = lamp.GetPercentFuelRemaining();
-			if (fuel <= 0.0001f)
-			{
-				s_wantLit = false;
-				Notify(Loc.NoFuel);
 				return;
 			}
 
-			lamp.TurnOn(!playerInitiated);
+			int layer = LayerMask.NameToLayer("Default");
+			if (layer < 0)
+			{
+				layer = 0;
+			}
+
+			try
+			{
+				gi.m_IsHidden = false;
+			}
+			catch
+			{
+				// 某些版本没有这个字段，忽略
+			}
+
+			go.layer = layer;
+
+			var found = go.GetComponentsInChildren<Renderer>(true);
+			foreach (Renderer r in found)
+			{
+				if (r == null)
+				{
+					continue;
+				}
+
+				s_renderers.Add(r);
+				s_rendererWasEnabled.Add(r.enabled);
+				r.enabled = true;
+
+				// 逐个子物体改层，避免模型被第一人称相机裁掉
+				r.gameObject.layer = layer;
+			}
+
+			if (s_renderers.Count == 0 && !s_noMeshLogged)
+			{
+				s_noMeshLogged = true;
+				ModLog.Warning("[挂腰] 这盏提灯没有找到任何 Renderer，模型会看不见（只剩光）。请在日志里反馈这一行。");
+			}
+			else if (Cfg?.Verbose ?? false)
+			{
+				ModLog.Msg($"[挂腰] 已打开 {s_renderers.Count} 个渲染器，层={layer}");
+			}
+		}
+		catch (Exception ex)
+		{
+			LogError("打开提灯渲染失败：" + ex.Message);
+		}
+	}
+
+	private static void ResetRenderStage()
+	{
+		s_renderers.Clear();
+		s_rendererWasEnabled.Clear();
+		s_renderStaged = false;
+	}
+
+	private static void RestoreRenderers()
+	{
+		if (!s_renderStaged)
+		{
+			return;
+		}
+
+		try
+		{
+			int count = Mathf.Min(s_renderers.Count, s_rendererWasEnabled.Count);
+			for (int i = 0; i < count; i++)
+			{
+				Renderer r = s_renderers[i];
+				if (r == null)
+				{
+					continue;
+				}
+
+				r.enabled = s_rendererWasEnabled[i];
+			}
+		}
+		catch
+		{
+			// 对象可能已随场景销毁
+		}
+
+		s_renderers.Clear();
+		s_rendererWasEnabled.Clear();
+		s_renderStaged = false;
+	}
+
+	private static void RestoreTransform(GearItem gi, Transform? origParent, Vector3 pos, Quaternion rot, Vector3 scale, bool active)
+	{
+		try
+		{
+			Transform t = gi.transform;
+			if (t == null)
+			{
+				return;
+			}
+
+			if (origParent != null)
+			{
+				t.SetParent(origParent, false);
+			}
+			else
+			{
+				t.SetParent(null, false);
+			}
+
+			t.localPosition = pos;
+			t.localRotation = rot;
+			t.localScale = scale;
+
+			GameObject go = gi.gameObject;
+			if (go != null && go.activeSelf != active)
+			{
+				go.SetActive(active);
+			}
+		}
+		catch (Exception ex)
+		{
+			LogError("还原提灯摆放失败：" + ex.Message);
 		}
 	}
 
@@ -468,7 +614,7 @@ internal static class LanternBeltManager
 		}
 
 		Settings? cfg = Cfg;
-		anchor.localPosition = new Vector3(cfg?.OffsetX ?? -0.2f, cfg?.OffsetY ?? 0.9f, cfg?.OffsetZ ?? 0.1f);
+		anchor.localPosition = new Vector3(cfg?.OffsetX ?? -0.22f, cfg?.OffsetY ?? 0.95f, cfg?.OffsetZ ?? 0.12f);
 		anchor.localRotation = Quaternion.identity;
 		anchor.localScale = Vector3.one;
 
@@ -497,6 +643,140 @@ internal static class LanternBeltManager
 		var fallback = GameManager.GetVpFPSCamera();
 		return fallback != null ? fallback.transform : null;
 	}
+
+	// ────────────────────────── 灯光与热量 ──────────────────────────
+
+	private static void ReconcileLamp(GearItem gi, bool playerInitiated)
+	{
+		var lamp = gi.m_KeroseneLampItem;
+		if (lamp == null)
+		{
+			return;
+		}
+
+		bool isOn = lamp.IsOn();
+
+		if (!s_wantLit)
+		{
+			if (isOn)
+			{
+				lamp.TurnOff(!playerInitiated);
+			}
+
+			SetHeat(gi, false);
+			return;
+		}
+
+		if (!isOn)
+		{
+			float fuel = lamp.GetPercentFuelRemaining();
+			if (fuel <= 0.0001f)
+			{
+				s_wantLit = false;
+				Notify(Loc.NoFuel);
+				return;
+			}
+
+			lamp.TurnOn(!playerInitiated);
+		}
+
+		// 关键：灯亮 ≠ 有热。HeatSource 是自己注册到 HeatSourceManager 的，
+		// 离场后重新激活不会再注册一次，所以每次校正都顺手补登。
+		SetHeat(gi, true);
+	}
+
+	private static void SetHeat(GearItem gi, bool want)
+	{
+		HeatSource? hs = s_heat;
+		if (hs == null)
+		{
+			try
+			{
+				hs = gi.GetComponentInChildren<HeatSource>(true);
+			}
+			catch
+			{
+				hs = null;
+			}
+
+			s_heat = hs;
+		}
+
+		if (hs == null)
+		{
+			return;
+		}
+
+		try
+		{
+			if (!want)
+			{
+				if (hs.IsTurnedOn())
+				{
+					hs.TurnOffImmediate();
+				}
+
+				return;
+			}
+
+			if (!hs.enabled)
+			{
+				hs.enabled = true;
+			}
+
+			if (!hs.IsTurnedOn())
+			{
+				hs.TurnOn();
+			}
+
+			RegisterHeat(hs);
+		}
+		catch (Exception ex)
+		{
+			if (Cfg?.Verbose ?? false)
+			{
+				ModLog.Warning("同步提灯热量失败：" + ex.Message);
+			}
+		}
+	}
+
+	/// <summary>把 HeatSource 补登进管理器的列表，否则温度判定扫不到它。</summary>
+	private static void RegisterHeat(HeatSource hs)
+	{
+		try
+		{
+			HeatSourceManager? mgr = GameManager.GetHeatSourceManagerComponent();
+			if (mgr == null)
+			{
+				return;
+			}
+
+			var list = mgr.m_HeatSources;
+			if (list == null)
+			{
+				mgr.AddHeatSource(hs);
+				return;
+			}
+
+			int count = list.Count;
+			for (int i = 0; i < count; i++)
+			{
+				HeatSource item = list[i];
+				if (item != null && item.Pointer == hs.Pointer)
+				{
+					return;
+				}
+			}
+
+			mgr.AddHeatSource(hs);
+		}
+		catch
+		{
+			// 管理器还没建好时忽略，下一帧会重试
+		}
+	}
+
+	// ────────────────────────── 物理 ──────────────────────────
 
 	private static bool CaptureOriginal(GearItem gi)
 	{
@@ -545,6 +825,8 @@ internal static class LanternBeltManager
 		s_hadRigidbody = false;
 		s_origKinematic = false;
 		s_wantLit = false;
+		s_heat = null;
+		s_diagLogged = false;
 	}
 
 	private static void SuspendPhysics(GearItem gi)
@@ -591,23 +873,7 @@ internal static class LanternBeltManager
 		}
 	}
 
-	private static bool IsInHands(GearItem gi)
-	{
-		try
-		{
-			PlayerManager? pm = GameManager.GetPlayerManagerComponent();
-			if (pm == null || pm.m_ItemInHands == null)
-			{
-				return false;
-			}
-
-			return pm.m_ItemInHands.Pointer == gi.Pointer;
-		}
-		catch
-		{
-			return false;
-		}
-	}
+	// ────────────────────────── 存档恢复 ──────────────────────────
 
 	private static GearItem? FindLanternInInventory(bool preferLit)
 	{
@@ -671,7 +937,6 @@ internal static class LanternBeltManager
 
 		if (now > s_restoreDeadline)
 		{
-			// 进场景后等了足够久还没等到点着的提灯，本次不再尝试
 			s_restoreDeadline = 0f;
 			return;
 		}
@@ -694,6 +959,51 @@ internal static class LanternBeltManager
 		Hang(lit);
 	}
 
+	// ────────────────────────── 工具 ──────────────────────────
+
+	private static bool SameGear(GearItem a, GearItem b)
+	{
+		try
+		{
+			return a.Pointer == b.Pointer;
+		}
+		catch
+		{
+			return false;
+		}
+	}
+
+	private static void LogDiagnostics(GearItem gi, Transform anchor)
+	{
+		try
+		{
+			GameObject go = gi.gameObject;
+			Transform t = gi.transform;
+			int enabledCount = 0;
+			foreach (Renderer r in s_renderers)
+			{
+				if (r != null && r.enabled)
+				{
+					enabledCount++;
+				}
+			}
+
+			ModLog.Msg("[挂腰] 诊断"
+				+ $" 物体={go.name}"
+				+ $" active={go.activeSelf}"
+				+ $" layer={go.layer}"
+				+ $" 渲染器={enabledCount}/{s_renderers.Count}"
+				+ $" 网格父层={anchor.parent?.name ?? "<无>"}"
+				+ $" 世界坐标={t.position}"
+				+ $" 缩放={t.lossyScale}"
+				+ $" 热量源={(s_heat == null ? "无" : (s_heat.IsTurnedOn() ? "已开" : "关"))}");
+		}
+		catch
+		{
+			// 纯诊断，失败不影响功能
+		}
+	}
+
 	private static void Notify(string message)
 	{
 		if (Cfg?.HudMessages ?? true)
@@ -712,19 +1022,7 @@ internal static class LanternBeltManager
 			}
 		}
 
-		Melon<LanternBeltMod>.Logger.Msg(message);
-	}
-
-	private static string Describe(GearItem gi)
-	{
-		try
-		{
-			return gi.name;
-		}
-		catch
-		{
-			return "<unnamed>";
-		}
+		ModLog.Msg(message);
 	}
 
 	private static void LogOnce(string message)
@@ -748,5 +1046,12 @@ internal static class LanternBeltManager
 
 		s_nextErrorLogTime = now + ErrorLogIntervalSeconds;
 		ModLog.Error(message);
+	}
+
+	// ────────────────────────── 供本地化钩子使用 ──────────────────────────
+
+	internal static bool IsLanternLocalizationKey(string key)
+	{
+		return !string.IsNullOrEmpty(key) && key.StartsWith(KeyPrefix, StringComparison.Ordinal);
 	}
 }

@@ -3,8 +3,9 @@ using UnityEngine;
 namespace LanternBelt;
 
 /// <summary>
-/// 少量屏幕提示文本的中英对照。本 mod 不往游戏本地化表里塞键值，
-/// 因为没有任何新增 UI 控件——只有 HUD 上的一行提示。
+/// 少量屏幕提示文本与按钮文案的中英对照。本 mod 不往游戏本地化表里塞键值：
+/// 按钮文案走 <c>Localization.Get</c> 的运行时替换（见 Patches/Localization_Get.cs），
+/// 屏幕提示直接由这里生成。
 /// </summary>
 internal static class Loc
 {
@@ -28,7 +29,7 @@ internal static class Loc
 		}
 	}
 
-	internal static string HangOn => UseChinese ? "提灯已挂到腰上" : "Lantern hung on your belt";
+	internal static string HangOn => UseChinese ? "提灯已挂到腰上（按 L 开关）" : "Lantern hung on your belt (press L to toggle)";
 
 	internal static string HangOff => UseChinese ? "提灯已收起" : "Lantern stowed";
 
@@ -39,4 +40,20 @@ internal static class Loc
 	internal static string LampOn => UseChinese ? "提灯已点亮" : "Lantern lit";
 
 	internal static string LampOff => UseChinese ? "提灯已熄灭" : "Lantern extinguished";
+
+	/// <summary>把本 mod 的本地化键翻成文本；不认识的键原样返回。</summary>
+	internal static string Term(string key)
+	{
+		switch (key)
+		{
+			case "LANTERNBELT_Hang":
+				return UseChinese ? "挂到腰上" : "Hang on belt";
+
+			case "LANTERNBELT_Stow":
+				return UseChinese ? "从腰上收起" : "Take off belt";
+
+			default:
+				return key;
+		}
+	}
 }
