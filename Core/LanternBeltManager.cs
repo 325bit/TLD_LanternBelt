@@ -343,7 +343,7 @@ internal static class LanternBeltManager
 
 		if (Cfg?.Verbose ?? false)
 		{
-			ModLog.Msg("[挂腰] 快捷键切灯" + DescribeHandsState());
+			ModLog.Msg("[挂腰] 快捷键切灯" + DescribeHandsState() + " 灯=" + DescribeLighting(s_hung));
 		}
 
 		Notify(s_wantLit ? Loc.LampOn : Loc.LampOff);
@@ -767,14 +767,7 @@ internal static class LanternBeltManager
 				return;
 			}
 
-			lamp.TurnOn(!playerInitiated);
-
-			// 关键：TurnOn 内部会把 m_On / m_TurnOnComplete 一起写成「开着但未完成」，
-			// 之后 KeroseneLampItem.UpdateEffects 会在 m_TurnOnEffectsDelay 之后调
-			// PlayerAnimation.Trigger_Generic_Ignite_Confirm —— 那是**第一人称点燃手势**。
-			// 灯不在手上时这个动画没有可绑定的模型，收不回来，整只手就锁死在点燃动作里
-			// （表现为不能装备其它物品、不能与物品互动）。这里直接标记「点燃已完成」跳过它。
-			SuppressIgniteAnimation(lamp);
+			TurnOnSafely(lamp);
 		}
 
 		// 关键：灯亮 ≠ 有热。HeatSource 是自己注册到 HeatSourceManager 的，
@@ -783,21 +776,51 @@ internal static class LanternBeltManager
 	}
 
 	/// <summary>
-	/// 让 <c>UpdateEffects</c> 跳过「点燃确认」手部动画。
-	/// <c>m_TurnOnComplete</c> 就是它读的那个开关（反汇编里 <c>cmp BYTE PTR [rbx+0xa5],0x0</c>），
-	/// 置真之后整段 <c>Trigger_Generic_Ignite_Confirm</c> 都不会执行，而光照 / 热量 / 烧油照旧。
+	/// 点亮提灯，但**不调用原版 <c>TurnOn</c>**。
+	///
+	/// 反汇编（RVA 0x120BA30）显示 <c>TurnOn</c> 的收尾是：
+	/// <code>
+	/// if (PlayerAnimation.FirstPersonHandsEnabled(m_GearItem))
+	///     PlayerAnimation.Trigger_Generic_Ignite(null, null);   // ← 第一人称点灯手势
+	/// </code>
+	/// 这个手势要求提灯在第一人称手部槽位。挂腰时手上没有灯，动画收不回来，
+	/// <c>PlayerAnimation</c> 的状态机就停在「正在点燃」——表现为**双手锁死：不能装备枪械 /
+	/// 石块 / 木炭，也不能与物品互动**。
+	///
+	/// 所以这里直接把原版那几个字段摆成「已点亮」：<c>m_On = true</c> 之后
+	/// <c>Update</c> 每帧会跑 <c>UpdateEffects</c> 与 <c>ReduceFuel</c>，光照、烧油、热量全都照旧，
+	/// 只是不会去碰手部动画。
 	/// </summary>
-	private static void SuppressIgniteAnimation(KeroseneLampItem lamp)
+	private static void TurnOnSafely(KeroseneLampItem lamp)
 	{
 		try
 		{
+			lamp.m_On = true;
+
+			// UpdateEffects 第一段就是 if (!m_TurnOnComplete) { …手势… }，置真即可整段跳过
 			lamp.m_TurnOnComplete = true;
+			lamp.m_TurningOff = false;
+			lamp.m_TurnOnEffectsTimer = 0f;
+
+			GameObject? fx = lamp.m_FXGameObject;
+			if (fx != null && !fx.activeSelf)
+			{
+				fx.SetActive(true);
+			}
 		}
 		catch (Exception ex)
 		{
-			if (Cfg?.Verbose ?? false)
+			// 字段写不进去（版本差异）时退回原版，但至少把手势压掉
+			ModLog.Warning("直接点亮失败，回退原版 TurnOn：" + ex.Message);
+
+			try
 			{
-				ModLog.Warning("标记点燃完成失败（可能会导致手部卡在点燃动作）：" + ex.Message);
+				lamp.TurnOn(true);
+				lamp.m_TurnOnComplete = true;
+			}
+			catch (Exception inner)
+			{
+				LogError("点亮提灯失败：" + inner.Message);
 			}
 		}
 	}
@@ -1133,11 +1156,39 @@ internal static class LanternBeltManager
 				+ $" 网格父层={anchor.parent?.name ?? "<无>"}"
 				+ $" 世界坐标={t.position}"
 				+ $" 缩放={t.lossyScale}"
-				+ $" 热量源={(s_heat == null ? "无" : (s_heat.IsTurnedOn() ? "已开" : "关"))}");
+				+ $" 热量源={(s_heat == null ? "无" : (s_heat.IsTurnedOn() ? "已开" : "关"))}"
+				+ $" 灯={DescribeLighting(gi)}");
 		}
 		catch
 		{
 			// 纯诊断，失败不影响功能
+		}
+	}
+
+	private static string DescribeLighting(GearItem gi)
+	{
+		try
+		{
+			var lamp = gi.m_KeroseneLampItem;
+			if (lamp == null)
+			{
+				return "无组件";
+			}
+
+			GameObject? fx = lamp.m_FXGameObject;
+			int lights = 0;
+			Light? a = lamp.m_LightIndoor;
+			Light? b = lamp.m_LightOutdoor;
+			Light? c = lamp.m_LightIndoorCore;
+			if (a != null && a.enabled) lights++;
+			if (b != null && b.enabled) lights++;
+			if (c != null && c.enabled) lights++;
+
+			return $"on={lamp.IsOn()} 特效={(fx == null ? "无" : (fx.activeSelf ? "开" : "关"))} 光源={lights}";
+		}
+		catch
+		{
+			return "读取失败";
 		}
 	}
 

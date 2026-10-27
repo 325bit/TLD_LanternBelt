@@ -5,17 +5,36 @@ using LanternBelt.Core;
 namespace LanternBelt.Patches;
 
 /// <summary>
-/// 兜底拦截「点燃确认」手部动画。
+/// 拦掉挂腰提灯触发的「第一人称点燃手势」。
 ///
-/// 原版 <c>KeroseneLampItem.UpdateEffects</c> 在点燃特效计时到点后会调
-/// <c>PlayerAnimation.Trigger_Generic_Ignite_Confirm</c> —— 那是第一人称抬手点灯的手势。
-/// 挂腰时提灯根本不在手上，这段动画没有对应模型可以收尾，手部状态机会一直卡在
-/// 「正在点燃」，于是装备枪械 / 石块 / 木炭、与物品互动全部失效。
+/// 原版有两处会触发它，两处都要挡：
+/// <list type="number">
+/// <item><c>KeroseneLampItem.TurnOn</c> 收尾：<c>if (FirstPersonHandsEnabled(m_GearItem)) Trigger_Generic_Ignite()</c></item>
+/// <item><c>KeroseneLampItem.UpdateEffects</c> 第一段：<c>if (!m_TurnOnComplete) Trigger_Generic_Ignite_Confirm()</c></item>
+/// </list>
 ///
-/// 主路径已经在 <c>ReconcileLamp</c> 里通过 <c>m_TurnOnComplete = true</c> 跳过这段；
-/// 这里再拦一层，防止某个时序分支仍然漏过去。判定只针对**挂腰的那盏灯**，
-/// 玩家点篝火、点火把时的手部动画完全不受影响。
+/// 灯拿在手上时这是正常的抬手点灯动作；挂在腰上时手部槽位里没有灯，动画收不回来，
+/// <c>PlayerAnimation</c> 的状态机就一直停在「点燃中」——玩家看到的是**双手锁死**：
+/// 不能装备枪械 / 石块 / 木炭，也不能与物品互动。
+///
+/// 判定只针对**挂腰的那盏灯**，玩家点篝火、点火把的手势照常播放。
 /// </summary>
+[HarmonyPatch(typeof(KeroseneLampItem), "TurnOn")]
+internal static class KeroseneLampItem_TurnOn
+{
+	internal static KeroseneLampItem? Current;
+
+	private static void Prefix(KeroseneLampItem __instance)
+	{
+		Current = __instance;
+	}
+
+	private static void Postfix()
+	{
+		Current = null;
+	}
+}
+
 [HarmonyPatch(typeof(KeroseneLampItem), "UpdateEffects")]
 internal static class KeroseneLampItem_UpdateEffects
 {
@@ -32,6 +51,23 @@ internal static class KeroseneLampItem_UpdateEffects
 	}
 }
 
+/// <summary>对应 TurnOn 收尾的那一次。</summary>
+[HarmonyPatch(typeof(PlayerAnimation), "Trigger_Generic_Ignite")]
+internal static class PlayerAnimation_Ignite
+{
+	private static bool Prefix()
+	{
+		KeroseneLampItem? lamp = KeroseneLampItem_TurnOn.Current;
+		if (lamp == null)
+		{
+			return true;
+		}
+
+		return !LanternBeltManager.IsHungLampComponent(lamp);
+	}
+}
+
+/// <summary>对应 UpdateEffects 第一段的那一次。</summary>
 [HarmonyPatch(typeof(PlayerAnimation), "Trigger_Generic_Ignite_Confirm")]
 internal static class PlayerAnimation_IgniteConfirm
 {

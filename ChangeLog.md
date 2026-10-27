@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.0
+
+### Fixed
+
+- **按 `L` 之后双手仍然被卡住**（1.2.0 没有真正修好）。原版有两处会触发第一人称点燃手势，1.2.0 只挡住了 `KeroseneLampItem.UpdateEffects` 里的 `Trigger_Generic_Ignite_Confirm`，而按 `L` 点亮走的是 `TurnOn` 收尾处的 `Trigger_Generic_Ignite` —— 两处是不同方法。现在点亮完全绕开原版 `TurnOn`，直接写 `m_On` / `m_TurnOnComplete` 等状态字段；两处手势也都加了「只在调用者是挂腰那盏灯时吞掉」的兜底。
+
 ## 1.2.0
 
 ### Changed
