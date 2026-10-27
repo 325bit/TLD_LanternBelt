@@ -1,0 +1,6 @@
+bin/
+obj/
+Release/
+*.user
+*.suo
+.vs/

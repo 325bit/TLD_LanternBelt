@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>Latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <DebugType>none</DebugType>
+    <AssemblyName>LanternBelt</AssemblyName>
+    <RootNamespace>LanternBelt</RootNamespace>
+    <!-- 指向实机安装；换机器只改这一行 -->
+    <TheLongDarkPath>F:\SteamLibrary\steamapps\common\TheLongDark</TheLongDarkPath>
+    <ReleaseFolderPath>$(MSBuildProjectDirectory)\Release</ReleaseFolderPath>
+  </PropertyGroup>
+
+  <!-- MelonLoader / HarmonyX / UnityEngine / Assembly-CSharp 由 STBlade 包传递提供 -->
+  <ItemGroup>
+    <PackageReference Include="STBlade.Modding.TLD.Il2CppAssemblies.Windows" Version="2.55.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 游戏类型全部落在 Il2Cpp / Il2CppTLD 命名空间，省掉每个文件的 using -->
+    <Using Include="Il2Cpp" />
+    <!-- 只额外引实机在跑的 ModSettings.dll，不复制进输出 -->
+    <Reference Include="ModSettings">
+      <HintPath>$(TheLongDarkPath)\Mods\ModSettings.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <Target Name="PostBuild" AfterTargets="PostBuildEvent">
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(TheLongDarkPath)/Mods" Condition="Exists('$(TheLongDarkPath)/Mods')" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(ReleaseFolderPath)" />
+  </Target>
+
+</Project>
