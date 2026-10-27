@@ -131,6 +131,12 @@
 
 ## 6. 挂点
 
+蹲下补偿：挂点挂在玩家根节点（脚底）上，是固定高度，所以蹲下时提灯会悬在原来的腰位。
+`EnsureAnchor` 每帧读 `PlayerManager.PlayerIsCrouched()`，蹲下时把 `localPosition.y` 减去
+`Settings.CrouchDropAmount`（默认 0.35 米），并用 `Mathf.Lerp(dt*8)` 跟随原版蹲、起的过渡。
+之所以不直接拿相机高度差换算：相机站立≈1.7m、蹲下≈1.0m，但腰胯只降约 0.35m，
+1:1 换算会让灯掉到小腿。
+
 `EnsureAnchor()` 每次挂腰时新建一个空物体 `LanternBelt_Anchor`，父节点二选一：
 
 - **玩家身体**（默认）：`GameManager.GetPlayerTransform()`，偏移按「脚底起算的米数」解释，`y=0.95` 约在胯部。

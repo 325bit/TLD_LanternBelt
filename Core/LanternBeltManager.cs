@@ -74,6 +74,9 @@ internal static class LanternBeltManager
 	private static IntPtr s_toggleGuardTarget;
 	private static float s_toggleGuardUntil;
 
+	/// <summary>蹲下时挂点已经下移的量（米），插值跟随，避免蹲/起瞬间跳变。</summary>
+	private static float s_crouchDrop;
+
 	internal static bool HasHungLantern
 	{
 		get { return s_hung != null; }
@@ -704,11 +707,55 @@ internal static class LanternBeltManager
 		}
 
 		Settings? cfg = Cfg;
-		anchor.localPosition = new Vector3(cfg?.OffsetX ?? -0.22f, cfg?.OffsetY ?? 0.95f, cfg?.OffsetZ ?? 0.12f);
+		float drop = UpdateCrouchDrop();
+		anchor.localPosition = new Vector3(
+			cfg?.OffsetX ?? -0.22f,
+			(cfg?.OffsetY ?? 0.95f) - drop,
+			cfg?.OffsetZ ?? 0.12f);
 		anchor.localRotation = Quaternion.identity;
 		anchor.localScale = Vector3.one;
 
 		return anchor;
+	}
+
+	/// <summary>
+	/// 蹲下时挂点跟着往下落。
+	///
+	/// 挂点挂在玩家根节点（脚底）上，是个固定高度，所以蹲下时提灯会悬在原来的腰部位置。
+	/// 这里读 <c>PlayerManager.PlayerIsCrouched()</c>，蹲下时把挂点往下挪一个可调的米数，
+	/// 并用插值跟随蹲/起的过渡（原版蹲下本身有 0.2~0.3 秒的相机落位）。
+	/// </summary>
+	private static float UpdateCrouchDrop()
+	{
+		Settings? cfg = Cfg;
+
+		float target = 0f;
+		if (cfg?.FollowCrouch ?? true)
+		{
+			try
+			{
+				PlayerManager? pm = GameManager.GetPlayerManagerComponent();
+				if (pm != null && pm.PlayerIsCrouched())
+				{
+					target = Mathf.Clamp(cfg?.CrouchDropAmount ?? 0.35f, 0f, 1.5f);
+				}
+			}
+			catch
+			{
+				// 场景切换中读不到，本帧按站立处理
+			}
+		}
+
+		float k = Mathf.Clamp01(Time.deltaTime * 8f);
+		s_crouchDrop = Mathf.Lerp(s_crouchDrop, target, k);
+
+		// 差得极小时直接吸附，避免长期停在一个几乎不可见的偏移上
+		if (Mathf.Abs(s_crouchDrop - target) < 0.002f)
+		{
+			s_crouchDrop = target;
+		}
+
+		return s_crouchDrop;
 	}
 
 	private static Transform? ResolveAnchorParent()
@@ -987,6 +1034,7 @@ internal static class LanternBeltManager
 		s_wantLit = false;
 		s_heat = null;
 		s_diagLogged = false;
+		s_crouchDrop = 0f;
 	}
 
 	private static void SuspendPhysics(GearItem gi)

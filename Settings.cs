@@ -60,6 +60,15 @@ internal class Settings : JsonModSettings
 	[Slider(0.1f, 2f)]
 	public float Scale = 1f;
 
+	[Name("蹲下时跟着下移")]
+	[Description("蹲下时把提灯一起往下挪，别让它悬在站立时的腰位上。关闭则挂点高度固定。")]
+	public bool FollowCrouch = true;
+
+	[Name("蹲下下移量（米）")]
+	[Description("蹲下时挂点降低多少米。默认 0.35 大约跟着腰胯一起落；觉得灯还偏高就调大，压进腿里就调小。")]
+	[Slider(0f, 1.2f)]
+	public float CrouchDropAmount = 0.35f;
+
 	[Name("每帧对齐挂点")]
 	[Description("每帧把提灯钉回挂点。关闭后只在挂腰瞬间摆一次位置，走动时灯会留在原地——除排查问题外不要关。")]
 	public bool FollowAnchor = true;
