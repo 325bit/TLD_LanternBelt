@@ -7,7 +7,7 @@ internal static class BuildInfo
 {
 	internal const string GUIName = "Lantern Belt";
 
-	internal const string Version = "1.5.0";
+	internal const string Version = "1.5.1";
 
 	internal const string Author = "Hemalurgic";
 

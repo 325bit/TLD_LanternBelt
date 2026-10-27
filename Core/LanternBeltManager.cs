@@ -23,7 +23,7 @@ namespace LanternBelt.Core;
 /// </summary>
 internal static class LanternBeltManager
 {
-	/// <summary>进场景后等多久还找不到点着的提灯就放弃恢复（存档反序列化有延迟）。</summary>
+	/// <summary>进场景后等多久还找不到那盏提灯就放弃恢复（存档反序列化有延迟）。</summary>
 	private const float RestoreWindowSeconds = 30f;
 
 	private const float RestoreIntervalSeconds = 2f;
@@ -32,6 +32,18 @@ internal static class LanternBeltManager
 
 	/// <summary>同一次点击里重复到达的切换请求在这段时间内被吸收。</summary>
 	private const float ToggleGuardSeconds = 0.3f;
+
+	/// <summary>
+	/// 换场景后这段时间里不判定「灯离开了背包」。
+	/// 场景加载中途 <c>m_InPlayerInventory</c> 会短暂为假，照它执行会把自己的挂腰状态当场拆掉。
+	/// </summary>
+	private const float SceneSettleSeconds = 8f;
+
+	/// <summary>「灯不在背包里」要连续成立这么久才算真的离手。</summary>
+	private const float InventoryGoneGraceSeconds = 1.5f;
+
+	/// <summary>找不到灯时，恢复失败日志的最小间隔。</summary>
+	private const float RestoreDiagIntervalSeconds = 10f;
 
 	private const string KeyPrefix = "LANTERNBELT_";
 
@@ -65,7 +77,7 @@ internal static class LanternBeltManager
 	private static HeatSource? s_heat;
 
 	private static float s_restoreDeadline;
-	private static float s_nextRestoreTime;
+	private static float s_nextReconcileTime;
 	private static bool s_anchorMissingLogged;
 	private static float s_nextErrorLogTime;
 	private static bool s_diagLogged;
@@ -76,6 +88,28 @@ internal static class LanternBeltManager
 
 	/// <summary>蹲下时挂点已经下移的量（米），插值跟随，避免蹲/起瞬间跳变。</summary>
 	private static float s_crouchDrop;
+
+	// —— 「应该挂在腰上」的意图快照 ——
+	//
+	// 跨场景恢复只认这份内存快照，不依赖 ModData 的读取时机，也不怕中途有谁把记录擦掉。
+	// 玩家的显式操作（卸下 / 丢弃 / 塞进容器）才会清掉它；场景切换、物体销毁都不清。
+	private static bool s_intentValid;
+	private static string s_intentName = string.Empty;
+	private static float s_intentFuel = -1f;
+	private static bool s_intentLit;
+
+	/// <summary>第一次在背包里找不到那盏灯的时刻，0 表示当前找得到。</summary>
+	private static float s_intentMissingSince;
+
+	private static float s_nextDiagTime;
+	private static float s_sceneSettleUntil;
+	private static float s_invGoneSince;
+
+	/// <summary>正在按记录恢复：此时的背包校验放宽，别把刚要挂上去的灯又拆下来。</summary>
+	private static bool s_restoring;
+
+	/// <summary>本次进入场景已经试过「背包里点着灯」的猜测，别反复猜。</summary>
+	private static bool s_guessTried;
 
 	internal static bool HasHungLantern
 	{
@@ -187,7 +221,8 @@ internal static class LanternBeltManager
 
 		if (IsHungLantern(gi))
 		{
-			Unhang();
+			// 玩家亲手卸下：这才是「不需要再挂回去」的唯一依据
+			Unhang(forget: true);
 			return true;
 		}
 
@@ -231,7 +266,7 @@ internal static class LanternBeltManager
 
 		if (s_hung != null)
 		{
-			// 一次只挂一盏：先把旧的还回去
+			// 一次只挂一盏：先把旧的还回去（不动意图快照，紧接着就会被新的覆盖）
 			Unhang(quiet: true);
 		}
 
@@ -277,24 +312,41 @@ internal static class LanternBeltManager
 		if (s_hung == null)
 		{
 			// Apply 发现物体已经不在背包里，退回原状——别点亮一盏已经离手的灯
+			if (!s_restoring)
+			{
+				ModLog.Msg("[挂腰] 挂腰中止：这盏灯已经不在背包里");
+			}
+
 			return false;
 		}
 
 		ReconcileLamp(gi, playerInitiated: true);
 
-		SaveLedger.SaveHung(gi, s_wantLit);
+		RememberIntent(gi, s_wantLit);
 
 		Notify(Loc.HangOn);
 		return true;
 	}
 
-	internal static void Unhang(bool quiet = false, bool restoreActive = true)
+	/// <summary>
+	/// 把灯从腰上拿下来。
+	///
+	/// <paramref name="forget"/> 决定要不要连「玩家希望它挂着」这件事一起忘掉：
+	/// 只有玩家亲手卸下、丢弃、塞进容器才忘；场景切换/物体销毁这类内部路径一律保留，
+	/// 否则跨场景时记录会被自己擦掉，回到新区域就挂不回去了。
+	/// </summary>
+	internal static void Unhang(bool quiet = false, bool restoreActive = true, bool forget = false)
 	{
 		GearItem? gi = s_hung;
 		if (gi == null)
 		{
 			ClearState();
-			SaveLedger.Clear();
+
+			if (forget)
+			{
+				ForgetIntent("已经没有挂着的灯");
+			}
+
 			return;
 		}
 
@@ -330,12 +382,54 @@ internal static class LanternBeltManager
 		ResumePhysics(gi);
 
 		ClearState();
-		SaveLedger.Clear();
+
+		if (forget)
+		{
+			ForgetIntent("玩家收起");
+		}
 
 		if (!quiet)
 		{
 			Notify(Loc.HangOff);
 		}
+	}
+
+	// ────────────────────────── 意图快照 ──────────────────────────
+
+	/// <summary>
+	/// 记下「这盏灯应该挂在腰上、灯是亮/灭的」，并同步写进 ModData。
+	///
+	/// 内存快照是跨场景恢复的第一依据：场景切换时旧物体随时可能被销毁、
+	/// ModData 的读取也可能落在不合适的时机，只有这份快照不受影响。
+	/// </summary>
+	private static void RememberIntent(GearItem gi, bool lit)
+	{
+		s_intentValid = true;
+		s_intentName = SaveLedger.ItemName(gi);
+		s_intentFuel = SaveLedger.FuelPercent(gi);
+		s_intentLit = lit;
+		s_intentMissingSince = 0f;
+		s_invGoneSince = 0f;
+
+		SaveLedger.SaveHung(gi, lit);
+	}
+
+	/// <summary>玩家明确表示「不需要挂着」时才调用：此后进任何场景都不会再自动挂回。</summary>
+	private static void ForgetIntent(string reason)
+	{
+		s_intentValid = false;
+		s_intentName = string.Empty;
+		s_intentFuel = -1f;
+		s_intentLit = false;
+		s_intentMissingSince = 0f;
+		s_invGoneSince = 0f;
+
+		// 玩家已经表态，本次场景内不再自动挂回，也别去猜背包里另一盏灯
+		s_restoreDeadline = 0f;
+		s_guessTried = true;
+
+		// 记录可能来自上一个会话（内存里还没有快照），所以无条件清，别留陈旧记录
+		SaveLedger.Clear(reason);
 	}
 
 	/// <summary>L 键：只有挂着的时候才应答，避免和游戏原有按键冲突。</summary>
@@ -349,7 +443,7 @@ internal static class LanternBeltManager
 		s_wantLit = !s_wantLit;
 
 		ReconcileLamp(s_hung, playerInitiated: true);
-		SaveLedger.SaveHung(s_hung, s_wantLit);
+		RememberIntent(s_hung, s_wantLit);
 
 		if (Cfg?.Verbose ?? false)
 		{
@@ -410,7 +504,7 @@ internal static class LanternBeltManager
 			}
 
 			s_wantLit = current.IsOn();
-			SaveLedger.SaveHung(gi, s_wantLit);
+			RememberIntent(gi, s_wantLit);
 		}
 		catch
 		{
@@ -424,7 +518,7 @@ internal static class LanternBeltManager
 	{
 		if (s_hung == null)
 		{
-			MaybeAutoRestore();
+			ReconcileIntent();
 			return;
 		}
 
@@ -433,7 +527,15 @@ internal static class LanternBeltManager
 
 	internal static void OnSceneChanged(string sceneName)
 	{
-		// 换场景时旧对象多半已经销毁，直接清状态，等 AutoRestore 重新挂
+		float now = Time.unscaledTime;
+
+		// 新的世界正在加载：这段时间里背包字段不可信，先别急着拆自己的台
+		s_sceneSettleUntil = now + SceneSettleSeconds;
+		s_invGoneSince = 0f;
+		s_nextReconcileTime = 0f;
+		s_nextDiagTime = 0f;
+
+		// 换场景时旧对象多半已经销毁，直接清运行时状态；意图快照不动
 		if (s_hung != null)
 		{
 			try
@@ -451,17 +553,30 @@ internal static class LanternBeltManager
 
 		// 主菜单 / 加载壳不参与恢复：否则退到主菜单等满一个窗口，
 		// 会把存档记录当成「找不到那盏灯」清掉，再进世界就恢复不了了。
+		// 同时这也是会话边界：内存快照作废，只留 ModData 里按存档槽分开的那份记录。
 		if (string.IsNullOrEmpty(sceneName)
 			|| sceneName.StartsWith("MainMenu", StringComparison.OrdinalIgnoreCase)
 			|| sceneName == "Empty")
 		{
 			s_restoreDeadline = 0f;
+			s_intentValid = false;
+			s_intentMissingSince = 0f;
+			s_guessTried = false;
 			return;
 		}
 
-		s_nextRestoreTime = 0f;
-		s_restoreDeadline = Time.unscaledTime + RestoreWindowSeconds;
-		ModLog.Msg($"[挂腰] 场景切换：{sceneName}");
+		s_nextReconcileTime = 0f;
+		s_guessTried = false;
+		s_restoreDeadline = now + RestoreWindowSeconds;
+
+		// 进入新区域：把「还挂着」再往记录里写一遍。旧物体可能已经销毁，
+		// 所以只用快照里的字段写，不碰 GearItem。
+		if (s_intentValid)
+		{
+			SaveLedger.Write(s_intentName, s_intentFuel, s_intentLit);
+		}
+
+		ModLog.Msg($"[挂腰] 场景切换：{sceneName}" + (s_intentValid ? "（应恢复悬挂）" : string.Empty));
 	}
 
 	// ────────────────────────── 摆放与显示 ──────────────────────────
@@ -483,12 +598,32 @@ internal static class LanternBeltManager
 				return;
 			}
 
-			// 被拖进容器 / 丢在地上 / 移出背包：这盏灯已经和我们无关了，交给游戏
-			if (!gi.m_InPlayerInventory || gi.m_InsideContainer)
+			// 塞进容器是玩家动手，立刻交还给游戏并忘掉；「不在背包里」可能只是加载中途的假象，
+			// 必须连续成立一会儿才算真的离手，而且不清意图快照（灯还会回来）。
+			if (gi.m_InsideContainer)
 			{
+				Unhang(quiet: true, restoreActive: false, forget: true);
+				return;
+			}
+
+			if (!gi.m_InPlayerInventory && !s_restoring && Time.unscaledTime >= s_sceneSettleUntil)
+			{
+				if (s_invGoneSince <= 0f)
+				{
+					s_invGoneSince = Time.unscaledTime;
+				}
+
+				if (Time.unscaledTime - s_invGoneSince < InventoryGoneGraceSeconds)
+				{
+					return;
+				}
+
+				ModLog.Msg("[挂腰] 提灯已不在背包里，暂时卸下（意图保留）");
 				Unhang(quiet: true, restoreActive: false);
 				return;
 			}
+
+			s_invGoneSince = 0f;
 
 			// 玩家正在检视这盏灯时让位，别和面板抢物体
 			PlayerManager? pm = GameManager.GetPlayerManagerComponent();
@@ -828,7 +963,7 @@ internal static class LanternBeltManager
 			if (fuel <= 0.0001f)
 			{
 				s_wantLit = false;
-				SaveLedger.SaveHung(gi, false);
+				RememberIntent(gi, false);
 				Notify(Loc.NoFuel);
 				return;
 			}
@@ -1144,76 +1279,142 @@ internal static class LanternBeltManager
 	}
 
 	/// <summary>
-	/// 换场景 / 读档后把提灯挂回去。
+	/// 没挂着灯的时候，每两秒对一次账：有没有一盏「本该挂在腰上」的灯，现在能挂回去。
 	///
-	/// 优先按 <see cref="SaveLedger"/> 里明确记录恢复——灯当时是灭的就恢复成灭的。
-	/// 早期版本靠「背包里有一盏点着的提灯」反推，玩家熄灯后出门就再也猜不出来（实测丢状态），
-	/// 所以那条只剩兜底作用，服务没有记录的老存档。
+	/// 依据是内存里的意图快照（<see cref="s_intentValid"/>），没有快照时才从
+	/// <see cref="SaveLedger"/> 的记录里接回来（读档 / 重启游戏）。
+	/// **灯亮不亮完全不影响这条路径**——记录里存着当时是亮是灭，照原样还原。
 	/// </summary>
-	private static void MaybeAutoRestore()
+	private static void ReconcileIntent()
 	{
-		if (s_restoreDeadline <= 0f || !(Cfg?.AutoRestore ?? true))
+		if (!(Cfg?.AutoRestore ?? true))
 		{
 			return;
 		}
 
 		float now = Time.unscaledTime;
-		if (now < s_nextRestoreTime)
+		if (now < s_nextReconcileTime)
 		{
 			return;
 		}
 
-		s_nextRestoreTime = now + RestoreIntervalSeconds;
-
-		if (now > s_restoreDeadline)
-		{
-			// 等满一整个窗口还没落位：记录作废，免得之后每次进场景都白等一轮
-			s_restoreDeadline = 0f;
-
-			if (GameManager.GetPlayerTransform() == null)
-			{
-				// 世界还没起来（加载中 / 退到主菜单），记录留着
-				return;
-			}
-
-			if (SaveLedger.TryLoad(out _, out _, out _))
-			{
-				SaveLedger.Clear();
-				ModLog.Msg("[挂腰] 等不到上次挂腰的那盏提灯，已作废记录");
-			}
-
-			return;
-		}
-
+		// 世界还没起来（加载中 / 主菜单）就别查背包，否则会把记录误判成「找不到灯」
 		if (GameManager.GetPlayerTransform() == null)
 		{
 			return;
 		}
 
-		// ① 有明确记录：照记录恢复，灯亮灭也照旧
-		if (SaveLedger.TryLoad(out string recordedName, out float recordedFuel, out bool recordedLit))
+		s_nextReconcileTime = now + RestoreIntervalSeconds;
+
+		// 没有内存快照：看看存档里有没有该挂回去的灯
+		if (!s_intentValid)
 		{
-			GearItem? recorded = FindLantern(recordedName, recordedFuel);
-			if (recorded == null || IsInHands(recorded))
+			if (s_restoreDeadline <= 0f)
 			{
-				// 场景反序列化有延迟，下一拍再看
 				return;
 			}
 
-			s_restoreDeadline = 0f;
-			ModLog.Msg($"[挂腰] 按存档记录恢复悬挂（{SaveLedger.ItemName(recorded)}，灯{(recordedLit ? "亮" : "灭")}）");
+			if (SaveLedger.TryLoad(out string name, out float fuel, out bool lit))
+			{
+				s_intentValid = true;
+				s_intentName = name;
+				s_intentFuel = fuel;
+				s_intentLit = lit;
+				s_intentMissingSince = 0f;
+				ModLog.Msg($"[挂腰] 读到存档记录：{name}，灯{(lit ? "亮" : "灭")}");
+			}
+			else
+			{
+				// 老存档没有记录：退回「背包里点着一盏灯」的猜测，且每次进场景只猜一次
+				TryGuessLitLantern();
+				return;
+			}
+		}
 
-			Hang(recorded, recordedLit);
+		GearItem? lamp = FindLantern(s_intentName, s_intentFuel);
+		if (lamp == null || IsInHands(lamp))
+		{
+			if (s_intentMissingSince <= 0f)
+			{
+				s_intentMissingSince = now;
+			}
+
+			float missing = now - s_intentMissingSince;
+
+			if (missing >= RestoreWindowSeconds)
+			{
+				ModLog.Msg("[挂腰] 等不到上次挂腰的那盏提灯，放弃这次恢复");
+				ForgetIntent("找不到那盏灯");
+				return;
+			}
+
+			if (now >= s_nextDiagTime)
+			{
+				s_nextDiagTime = now + RestoreDiagIntervalSeconds;
+				ModLog.Msg("[挂腰] 还在等那盏提灯进背包"
+					+ $"（{missing:0.0}s，{(lamp == null ? "背包里没有提灯" : "提灯还在手上")}）");
+			}
+
 			return;
 		}
 
-		// ② 老存档没有记录：退回「背包里点着灯」的猜测
+		s_restoring = true;
+		bool hung;
+
+		try
+		{
+			hung = Hang(lamp, s_intentLit);
+		}
+		finally
+		{
+			s_restoring = false;
+		}
+
+		if (!hung)
+		{
+			// 找到了灯却挂不上去（物体正在被游戏搬动之类）：继续试，但也要有个尽头
+			if (s_intentMissingSince <= 0f)
+			{
+				s_intentMissingSince = now;
+			}
+
+			if (now - s_intentMissingSince >= RestoreWindowSeconds)
+			{
+				ModLog.Msg("[挂腰] 反复挂不上去，放弃这次恢复");
+				ForgetIntent("恢复失败");
+			}
+			else
+			{
+				ModLog.Msg("[挂腰] 恢复悬挂失败，下一轮再试");
+			}
+
+			return;
+		}
+
+		s_intentMissingSince = 0f;
+		s_restoreDeadline = 0f;
+
+		ModLog.Msg($"[挂腰] 按记录恢复悬挂（{s_intentName}，灯{(s_intentLit ? "亮" : "灭")}）");
+	}
+
+	/// <summary>
+	/// 老存档（没有记录）的兜底：背包里有一盏点着的提灯，就认为它本来挂在腰上。
+	/// 每次进场景只猜一次，免得玩家刚卸下就被猜回去。
+	/// </summary>
+	private static void TryGuessLitLantern()
+	{
+		if (s_guessTried)
+		{
+			return;
+		}
+
 		GearItem? lit = FindLanternInInventory(preferLit: true);
 		if (lit == null || !IsLantern(lit) || IsInHands(lit) || !lit.m_KeroseneLampItem.IsOn())
 		{
 			return;
 		}
 
+		s_guessTried = true;
 		s_restoreDeadline = 0f;
 
 		ModLog.Msg("[挂腰] 检测到背包里有点着的提灯，自动恢复挂腰");
@@ -1222,8 +1423,9 @@ internal static class LanternBeltManager
 	}
 
 	/// <summary>
-	/// 按「物品名 + 燃油比例」在背包里认出上次那盏灯。
+	/// 按「物品名 + 燃油百分比」在背包里认出上次那盏灯。
 	/// 同型号多盏时取燃油最接近的；名字对不上也允许（不同世界的同名提灯），只是排序靠后。
+	/// 只要背包里有提灯就一定会返回一盏——返回 null 只表示背包里根本没有提灯。
 	/// </summary>
 	private static GearItem? FindLantern(string itemName, float fuel)
 	{
@@ -1254,7 +1456,7 @@ internal static class LanternBeltManager
 					score += 1000f;
 				}
 
-				float f = SaveLedger.FuelFraction(gi);
+				float f = SaveLedger.FuelPercent(gi);
 				if (fuel >= 0f && f >= 0f)
 				{
 					score += Mathf.Abs(f - fuel) * 100f;

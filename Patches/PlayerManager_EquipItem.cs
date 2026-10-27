@@ -49,7 +49,8 @@ internal static class PlayerManager_Drop
 	{
 		if (LanternBeltManager.IsHungLantern(go))
 		{
-			LanternBeltManager.Unhang(quiet: true, restoreActive: false);
+			// 灯被丢在地上：确实不该再挂回去了，连记录一起清
+			LanternBeltManager.Unhang(quiet: true, restoreActive: false, forget: true);
 		}
 	}
 }

@@ -124,30 +124,66 @@
 | `PlayerAnimation.Trigger_Generic_Ignite` | Prefix（返回 false） | 发起者是挂腰灯 → 吞掉 | `TurnOn` 收尾那次，按 L 卡手就是它 |
 | `PlayerAnimation.Trigger_Generic_Ignite_Confirm` | Prefix（返回 false） | 发起者是挂腰灯 → 吞掉 | `UpdateEffects` 里那次，兜底 |
 | `Localization.Get` | Postfix | 只替换 `LANTERNBELT_*` 前缀的键 | 不引入本地化库、不污染游戏字符串表 |
-| `PlayerManager.Drop(GameObject,bool)` | Prefix | 挂腰的灯被丢弃 → 先 `Unhang(restoreActive:false)` | 否则父节点还在玩家身上，落地物体会跟着人走 |
+| `PlayerManager.Drop(GameObject,bool)` | Prefix | 挂腰的灯被丢弃 → 先 `Unhang(restoreActive:false, forget:true)` | 否则父节点还在玩家身上，落地物体会跟着人走；丢弃是玩家表态，意图一起清 |
 | `KeroseneLampItem.Toggle` | Postfix | 同步 `s_wantLit` | 玩家通过原版途径开关灯时，别让每帧校正把操作改回去 |
 
-驱动：`MelonMod.OnUpdate` → `LanternBeltManager.Tick()`（每帧）+ `OnSceneWasLoaded` → 允许一次自动恢复。
+驱动：`MelonMod.OnUpdate` → `LanternBeltManager.Tick()`（每帧：挂着就 `Apply`，没挂就 `ReconcileIntent`）
++ `OnSceneWasLoaded` → 更新意图快照的镇定期并重写一次记录。
 
-### 跨场景 / 读档恢复（SaveLedger）
+### 跨场景 / 读档恢复（意图快照 + SaveLedger）
 
 早期实现是「猜」的：原版把灯亮灭写进 `KeroseneLampItemSaveDataProxy.m_OnProxy`，而卸下必然熄灯，
 所以「背包里有一盏点着的提灯」被当成挂腰的证据。**这条路在玩家熄灯后出门时会彻底失效**
 （实测 19:55:12 熄灯 → 19:55:19 换场景 → 日志里没有任何恢复记录），挂腰状态凭空消失。
 
-现在用 `ModData` 明确记录，写法照 `HuntingRoads/SaveLedger.cs`：
+1.5.0 改用 `ModData` 明确记录，写法照 `HuntingRoads/SaveLedger.cs`：
 
 ```csharp
 private static readonly ModDataManager s_data = new ModDataManager("LanternBelt", false);
-s_data.Save("1|GEAR_KeroseneLamp_Spelunkers|0.734|0");   // 挂腰|物品名|燃油比例|亮着
+s_data.Save("1|GEAR_KeroseneLamp_Spelunkers|97.166|0");   // 挂腰|物品名|燃油百分比|亮着
 ```
 
-- 记录时机：`Hang` 成功、`L` 切灯、油尽自动熄灭、原版 `Toggle` 同步之后。
-- 清除时机：`Unhang`（手动卸下 / 丢弃 / 进容器）。
-- 恢复时机：`OnSceneWasLoaded` 开 30 秒窗口，每 2 秒试一次；先按记录找灯
-  （名字 + 燃油比例最接近），找不到才退回旧的「点着灯」猜测。
-- **主菜单与 `Empty` 场景必须跳过早退**，否则退到主菜单等满一个窗口会把记录当成
-  「找不到那盏灯」清掉，再进世界就恢复不了。
+燃油是 `KeroseneLampItem.GetPercentFuelRemaining()` 的**原样百分比（0~100）**，不是 0~1 的比例；
+ModData 侧 `[ModData] Cache Saved (212)` 与 `Mods/ModData/sandbox3.moddata` 里的 zip 条目可以直接对照验证。
+
+#### 为什么「只有点亮着的提灯」能跨区域（1.5.0 的真 bug）
+
+实测日志（同一局，三种跨区域）：
+
+| 时刻 | 灯状态 | 结果 |
+| --- | --- | --- |
+| 22:11:38 CoastalHouseE → CoastalRegion | 悬挂、**熄灭** | **没有恢复**，玩家 22:11:51 手动重挂 |
+| 22:12:08 CoastalRegion → CoastalHouseE | 悬挂、点亮 | 22:12:10 `按存档记录恢复悬挂（…，灯亮）` |
+| 22:12:23 CoastalHouseE → CoastalRegion | 悬挂、点亮 | 22:12:29 恢复 |
+| 22:12:56 CoastalRegion → HighwayTransitionZone | 悬挂、点亮 | 22:12:58 恢复 |
+
+亮不亮本身不参与任何判定，真正的差别是**记录有没有活到恢复那一刻**：
+
+1. `Apply()` 里有一条「灯不在背包里就 `Unhang`」的守卫。跨区域是「保存 → 销毁世界 → 重建世界」，
+   重建过程中 `GearItem.m_InPlayerInventory` 会短暂为假，于是我们自己把灯拆了。
+2. `Unhang` 会顺带 `SaveLedger.Clear()`（写 `"0"`），记录当场作废。
+3. 记录没了以后只剩「背包里点着灯」的兜底猜测——**恰好只有点亮着的那盏猜得回来**。
+
+所以症状看起来是「灯亮才存得住」，实际是「记录被自己擦掉，只剩兜底」。
+
+#### 1.5.1 的修法
+
+- **内存意图快照**：`s_intentValid / s_intentName / s_intentFuel / s_intentLit`。它是跨场景恢复的第一依据，
+  不受 ModData 读取时机影响，也不怕中途有人把记录擦掉；**只有玩家的显式操作才清它**。
+- **`Unhang(..., forget)` 参数**：`forget` 默认 `false`。只有「玩家亲手卸下 / 丢弃 / 塞进容器」传 `true`；
+  场景切换、物体销毁这类内部路径一律保留意图。这是本次修复的核心——不再有任何内部路径能擦掉记录。
+- **场景镇定期**：`OnSceneChanged` 之后 8 秒内（`SceneSettleSeconds`）不做背包校验；
+  过了镇定期，`!m_InPlayerInventory` 还要连续成立 1.5 秒（`InventoryGoneGraceSeconds`）才认账。
+- **对账循环 `ReconcileIntent()`**：`Tick` 里只要没挂着灯就每 2 秒对一次账，不再依赖「30 秒窗口是否开着」。
+  没有快照时先 `SaveLedger.TryLoad` 接回来（读档 / 重启游戏），接不回来且在新场景窗口里才走旧的猜测。
+  找不到灯时每 10 秒打一行 `[挂腰] 还在等那盏提灯进背包（…）`，30 秒后才放弃并清记录。
+- **进新区域时重写记录**：`OnSceneChanged` 用快照字段（不碰 `GearItem`，旧物体可能已销毁）
+  再写一遍 `SaveLedger.Write`，把「应该挂着」钉进当前存档槽。
+- **主菜单 / `Empty` 是会话边界**：跳过恢复窗口，并作废内存快照（记录留在 ModData 里，按存档槽分开），
+  否则退到主菜单等满窗口会把记录当成「找不到那盏灯」清掉。
+
+恢复时 `s_restoring = true`，`Apply` 会放宽背包校验——`FindLantern` 已经证明那盏灯在
+`Inventory.m_Items` 里，不需要再被自己的守卫拆一次。
 
 ## 6. 挂点
 
@@ -179,7 +215,8 @@ s_data.Save("1|GEAR_KeroseneLamp_Spelunkers|0.734|0");   // 挂腰|物品名|燃
 3. **收起后原摆放的还原**：`Unhang` 会把物体还给 `s_origParent`；父节点已随场景销毁时静默失败，
    此时只把物体 deactivate，交给原版装备流程重新摆放。
 4. **`Time.timeScale > 0` 作为按键闸门**：假设开背包不暂停时间；若暂停，`L` 在背包里不响应，无副作用。
-5. **自动恢复的窗口期 30 秒**：读档反序列化慢于 30 秒时会错过恢复，重新点一次物品栏按钮即可。
+5. **恢复不再依赖「窗口是否开着」**：意图快照在内存里，跨场景 / 读档任意时刻都能对上；
+   30 秒只是「背包里一直找不到那盏灯」的放弃时限，超时才会清记录。
 
 ## 8. 排查方法
 
@@ -190,11 +227,21 @@ s_data.Save("1|GEAR_KeroseneLamp_Spelunkers|0.734|0");   // 挂腰|物品名|燃
 2. 灯亮不亮：不亮先看油量（`GetPercentFuelRemaining`）。
 3. 按钮文案不对：看 `Harmony 补丁已应用，共 N 个方法` 的 N 是否比上次多 3（文案 / 本地化 / 丢弃）。
 4. 想确认当前是否挂腰：屏幕提示、日志，或按 `L` 看有没有反应（`L` 只在挂腰时响应）。
+5. 跨场景没恢复，按顺序看这几行：
+   - `[挂腰] 场景切换：<区域>（应恢复悬挂）` → 意图快照还在（没有后缀则说明快照已丢）
+   - `[挂腰] 按记录恢复悬挂（…，灯亮/灭）` → 恢复了，亮灭照原样
+   - `[挂腰] 还在等那盏提灯进背包（…）` → 背包里暂时没有那盏灯（或它在手上）
+   - `[存档] 清除记录（…）` → 谁把它清了，括号里就是原因
+   - `Mods/ModData/<存档槽>.moddata` 是个 zip，条目 `LanternBelt` 里能直接读到
+     `1|GEAR_KeroseneLamp_Spelunkers|97.166|0`（挂腰|物品名|燃油百分比|亮着）
 
 ## 9. 设计约束（改代码时别破坏）
 
 - 不修改物品定义、燃油速率、光照强度——所有数值都走原版。
-- 不额外写存档字段：状态从「背包里有一盏点着的提灯」反推，卸载 mod 后存档干净。
+- 不写游戏存档字段：挂腰状态存在 ModData 自己的 `Mods/ModData/<存档槽>.moddata` 里，
+  卸载 mod 后游戏存档依然干净。
+- **别让内部路径清掉意图快照**：`Unhang` 的 `forget` 只有玩家显式操作（卸下 / 丢弃 / 进容器）才为 `true`。
+  场景切换、物体销毁、加载中途的背包字段抖动一律保留，否则跨场景必然丢状态。
 - 挂腰期间必须压制提灯自身物理（关碰撞 + 刚体设为运动学），否则每帧定位会和质量/重力打架。
 - 悬挂状态只能由物品栏点击切换；`L` 只负责亮 / 灭，不能反过来兼职挂腰。
 - 挂腰期间不得拦截其它物品的装备动作——手必须是真的空。

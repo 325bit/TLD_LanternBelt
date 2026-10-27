@@ -4,7 +4,7 @@
 
 *A The Long Dark mod that hangs a lit kerosene lantern on your belt, keeping both hands free.*
 
-![version](https://img.shields.io/badge/version-1.5.0-informational)
+![version](https://img.shields.io/badge/version-1.5.1-informational)
 
 ![game](https://img.shields.io/badge/The%20Long%20Dark-2.55-success)
 
@@ -102,7 +102,7 @@
 
 ## 版本
 
-1.5.0 —— 更新记录见 [ChangeLog.md](ChangeLog.md)。
+1.5.1 —— 更新记录见 [ChangeLog.md](ChangeLog.md)。
 
 ## 许可证
 
