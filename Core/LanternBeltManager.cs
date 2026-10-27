@@ -186,10 +186,15 @@ internal static class LanternBeltManager
 
 		if (inHands)
 		{
-			// 原版卸下路径会顺手熄灯，紧接着由 ReconcileLamp 重新点亮
+			// 用 SkipAnimation 版本：无卸下动画，物体立刻回到背包位置，
+			// 后面 CaptureOriginal 记到的才是「背包里的摆放」。
 			try
 			{
-				GameManager.GetPlayerManagerComponent()?.UnequipItemInHands();
+				PlayerManager? pm = GameManager.GetPlayerManagerComponent();
+				if (pm != null)
+				{
+					pm.UnequipItemInHandsSkipAnimation();
+				}
 			}
 			catch (Exception ex)
 			{
@@ -261,7 +266,9 @@ internal static class LanternBeltManager
 		}
 
 		RestoreRenderers();
-		RestoreTransform(gi, origParent, pos, rot, scale, restoreActive && (origActive || !inHandsBefore));
+
+		// 原本拿在手上的灯，收起后应当是「躺在背包里」——物体必须重新隐藏
+		RestoreTransform(gi, origParent, pos, rot, scale, restoreActive && origActive && !inHandsBefore);
 		ResumePhysics(gi);
 
 		ClearState();
