@@ -30,6 +30,9 @@ internal static class LanternBeltManager
 
 	private const float ErrorLogIntervalSeconds = 15f;
 
+	/// <summary>同一次点击里重复到达的切换请求在这段时间内被吸收。</summary>
+	private const float ToggleGuardSeconds = 0.3f;
+
 	private const string KeyPrefix = "LANTERNBELT_";
 
 	// ────────────────────────── 运行状态 ──────────────────────────
@@ -66,6 +69,10 @@ internal static class LanternBeltManager
 	private static bool s_anchorMissingLogged;
 	private static float s_nextErrorLogTime;
 	private static bool s_diagLogged;
+
+	// —— 去抖：记录上一次切换的目标与时间，吸收同一帧内重复到达的请求 ——
+	private static IntPtr s_toggleGuardTarget;
+	private static float s_toggleGuardUntil;
 
 	internal static bool HasHungLantern
 	{
@@ -157,9 +164,24 @@ internal static class LanternBeltManager
 
 	// ────────────────────────── 入口 ──────────────────────────
 
-	/// <summary>物品栏「挂腰 / 收起」按钮的统一入口。返回 true 表示已经处理，调用方应吞掉原版装备。</summary>
+	/// <summary>
+	/// 物品栏「悬挂 / 卸下」按钮的统一入口。返回 true 表示已经处理，调用方应吞掉原版装备。
+	///
+	/// 带去抖：物品检视面板的一次点击实测会触发两次装备请求，不去抖的话
+	/// 第一下挂上、第二下立刻收起，玩家只看到「提灯已收起」而腰上什么都没有。
+	/// </summary>
 	internal static bool ToggleHolster(GearItem gi)
 	{
+		if (gi == null || !IsLantern(gi))
+		{
+			return false;
+		}
+
+		if (IsRepeatToggle(gi))
+		{
+			return true;
+		}
+
 		if (IsHungLantern(gi))
 		{
 			Unhang();
@@ -167,6 +189,34 @@ internal static class LanternBeltManager
 		}
 
 		return Hang(gi);
+	}
+
+	/// <summary>同一次点击产生的后续请求：吞掉，但不改变状态。</summary>
+	private static bool IsRepeatToggle(GearItem gi)
+	{
+		float now = Time.unscaledTime;
+
+		try
+		{
+			if (s_toggleGuardTarget != IntPtr.Zero && s_toggleGuardTarget == gi.Pointer && now < s_toggleGuardUntil)
+			{
+				if (Cfg?.Verbose ?? false)
+				{
+					ModLog.Msg("[挂腰] 忽略同一次点击产生的重复切换请求");
+				}
+
+				return true;
+			}
+
+			s_toggleGuardTarget = gi.Pointer;
+		}
+		catch
+		{
+			// 指针读不到时不拦，交给正常流程
+		}
+
+		s_toggleGuardUntil = now + ToggleGuardSeconds;
+		return false;
 	}
 
 	internal static bool Hang(GearItem gi)

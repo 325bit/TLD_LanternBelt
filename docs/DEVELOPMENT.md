@@ -20,7 +20,8 @@
 | `Settings.cs` | ModSettings 面板与落盘（`Mods/LanternBelt.json`） |
 | `Core/LanternBeltManager.cs` | 状态机 + 每帧校正 + 渲染/热量接管 + 挂点 + 读档恢复 |
 | `Patches/PlayerManager_EquipItem.cs` | 物品栏切换入口、丢弃前收起、原版开关灯同步 |
-| `Patches/ItemDescriptionPage_EquipButtonLabel.cs` | 装备按钮文案「挂到腰上 / 从腰上收起」 |
+| `Patches/ItemDescriptionPage_EquipButtonLabel.cs` | 装备按钮文案「悬挂/卸下」（恒定文案） |
+| `Patches/ItemDescriptionPage_Description.cs` | 悬挂时在物品介绍末尾追加「[已悬挂在腰带上]」 |
 | `Patches/Localization_Get.cs` | 运行时翻译本 mod 的 `LANTERNBELT_*` 键 |
 | `Loc.cs` | 屏幕提示与按钮文案的中英对照 |
 | `ModLog.cs` | 静态日志出口（静态类拿不到实例 Logger） |
@@ -41,6 +42,15 @@
   兜住三件事：原版卸下顺手熄灯、油尽、点燃有延迟。
 - `s_restoreDeadline`：进场景后 30 秒内允许一次自动恢复，之后不再尝试，
   以防玩家手动收起后又被自动挂回去。
+- `s_toggleGuardUntil` / `s_toggleGuardTarget`：**去抖**。物品检视面板的一次点击实测会到达
+  两次 `PlayerManager.EquipItem`（13:15:11.162 悬挂 / .164 卸下，间隔 2ms），
+  不去抖会「挂上即被自己卸下」，玩家只看到「提灯已收起」。同一指针 0.3 秒内的重复请求直接吞掉。
+
+### 双触发为什么必须靠去抖，而不是找「唯一入口」
+
+`EquipItem` 已经是最上游的汇合点，但链路上任何一个 mod 的 Prefix 手动回调原方法都会
+再进来一次；本机 275 个 mod 里 FuelManager 就活跃在同一条链上。去抖是按「同一个 GearItem
+在同一瞬间的重复请求」判定的，与调用者是谁无关，因此比绑死某个入口稳。
 
 ### 为什么是「每帧校正」而不是「一次性摆好」
 
@@ -81,7 +91,8 @@
 | 补丁 | 类型 | 做什么 | 为什么在这里 |
 |---|---|---|---|
 | `PlayerManager.EquipItem` | Prefix（返回 false 吞掉原版） | 提灯 → `ToggleHolster`；其它物品放行 | 所有「装备」路径的汇合点（面板按钮 / 快速装备 / 拾取自动装备），与 HuntingRoads 挂瞄准镜同法 |
-| `ItemDescriptionPage.GetEquipButtonLocalizationId` | Postfix | 提灯 → 返回 `LANTERNBELT_Hang` / `LANTERNBELT_Stow` | 不改控件只改文案，手柄提示与原版事件链全部保留 |
+| `ItemDescriptionPage.GetEquipButtonLocalizationId` | Postfix | 提灯 → 返回 `LANTERNBELT_Mount` | 不改控件只改文案，手柄提示与原版事件链全部保留 |
+| `ItemDescriptionPage.BuildItemDescription` | Postfix | 悬挂时 `__result += "\n" + Get("LANTERNBELT_Mounted")` | 与 HuntingRoads 给装镜的枪加描述行完全同法，不碰 UI 控件 |
 | `Localization.Get` | Postfix | 只替换 `LANTERNBELT_*` 前缀的键 | 不引入本地化库、不污染游戏字符串表 |
 | `PlayerManager.Drop(GameObject,bool)` | Prefix | 挂腰的灯被丢弃 → 先 `Unhang(restoreActive:false)` | 否则父节点还在玩家身上，落地物体会跟着人走 |
 | `KeroseneLampItem.Toggle` | Postfix | 同步 `s_wantLit` | 玩家通过原版途径开关灯时，别让每帧校正把操作改回去 |

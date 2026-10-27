@@ -13,9 +13,11 @@ namespace LanternBelt.Patches;
 [HarmonyPatch(typeof(Localization), "Get")]
 internal static class Localization_Get
 {
-	internal const string HangKey = "LANTERNBELT_Hang";
+	/// <summary>物品栏动作按钮文案，与瞄准镜的「安装/卸下」同形。</summary>
+	internal const string MountKey = "LANTERNBELT_Mount";
 
-	internal const string StowKey = "LANTERNBELT_Stow";
+	/// <summary>悬挂姿态下附加在物品介绍末尾的那一行。</summary>
+	internal const string MountedKey = "LANTERNBELT_Mounted";
 
 	private static void Postfix(string __0, ref string __result)
 	{

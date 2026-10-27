@@ -29,9 +29,9 @@ internal static class Loc
 		}
 	}
 
-	internal static string HangOn => UseChinese ? "提灯已挂到腰上（按 L 开关）" : "Lantern hung on your belt (press L to toggle)";
+	internal static string HangOn => UseChinese ? "提灯已悬挂在腰上（按 L 开关）" : "Lantern hung on your belt (press L to toggle)";
 
-	internal static string HangOff => UseChinese ? "提灯已收起" : "Lantern stowed";
+	internal static string HangOff => UseChinese ? "提灯已从腰上卸下" : "Lantern taken off your belt";
 
 	internal static string NoLantern => UseChinese ? "背包里没有提灯" : "No lantern in your pack";
 
@@ -46,11 +46,11 @@ internal static class Loc
 	{
 		switch (key)
 		{
-			case "LANTERNBELT_Hang":
-				return UseChinese ? "挂到腰上" : "Hang on belt";
+			case "LANTERNBELT_Mount":
+				return UseChinese ? "悬挂/卸下" : "Hang / Take off";
 
-			case "LANTERNBELT_Stow":
-				return UseChinese ? "从腰上收起" : "Take off belt";
+			case "LANTERNBELT_Mounted":
+				return UseChinese ? "[已悬挂在腰带上]" : "[Hung on your belt]";
 
 			default:
 				return key;
