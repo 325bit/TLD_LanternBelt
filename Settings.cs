@@ -29,10 +29,6 @@ internal class Settings : JsonModSettings
 	[Description("读档或进入新场景时，如果背包里有一盏点着的提灯，自动重新挂回腰上。")]
 	public bool AutoRestore = true;
 
-	[Name("显示屏幕提示")]
-	[Description("挂上 / 收起 / 没油 时在屏幕上提示一行字。嫌吵可以关掉，日志里仍然有记录。")]
-	public bool HudMessages = true;
-
 	[Name("保留原版「装备」行为")]
 	[Description("开启后，物品栏里点提灯仍然是原版的「拿到手上」，挂腰功能整体失效。只在排查其它 mod 冲突时使用。")]
 	public bool PanelKeepsVanilla = false;

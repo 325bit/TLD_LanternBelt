@@ -84,7 +84,31 @@
 | 可见性 | `GearItem.m_IsHidden`、`m_MeshRenderers`；`GameObject.layer` |
 | 背包 | `GameManager.GetInventoryComponent().m_Items` |
 | 玩家 / 相机 | `GameManager.GetPlayerTransform()`、`GetVpFPSCamera()` |
-| HUD 提示 | `InterfaceManager.GetPanel<Panel_HUD>().DisplayWarningMessage(string)` |
+| 手部状态 | `PlayerAnimation.FirstPersonHandsEnabled(GearItem)`（实例方法，经 `GameManager.GetPlayerAnimationComponent()` 取） |
+
+### 为什么必须压掉「点燃确认」手部动画（按 L 卡手）
+
+`KeroseneLampItem.UpdateEffects` 的第一段（`cmp BYTE PTR [rbx+0xa5],0x0` / `jne 光照段`）是：
+
+```csharp
+if (!m_TurnOnComplete) {
+    m_TurnOnComplete = true;
+    if (PlayerAnimation.FirstPersonHandsEnabled(m_GearItem))
+        m_Anim.Trigger_Generic_Ignite_Confirm(null, null);   // ← 第一人称点燃手势
+}
+// 之后才是 Light.enabled 的三灯切换
+```
+
+而 `TurnOn` 里 `mov WORD PTR [rdi+0xa4],0x1` —— **一次性写 2 字节，把 `m_On` 置 1、`m_TurnOnComplete` 置 0**。
+所以每次点亮都会重新触发一次点燃手势。灯拿在手上时这是正常动画；挂在腰上时提灯不在
+手部槽位，动画没有可绑定的模型，`PlayerAnimation` 的状态机收不回来 —— 表现为
+**双手锁死：不能装备枪械 / 石块 / 木炭，也不能与物品互动**。
+
+修法两层：
+1. 主路径：`TurnOn` 之后立刻 `lamp.m_TurnOnComplete = true`，`UpdateEffects` 直接跳到光照段，
+   光照 / 热量 / 烧油完全不受影响（反汇编已核）。
+2. 兜底：`PlayerAnimation.Trigger_Generic_Ignite_Confirm` Prefix，只在调用者是挂腰那盏灯时吞掉
+   —— 玩家点篝火、点火把的手势照常播放。
 
 ## 5. 注入点
 
@@ -93,6 +117,8 @@
 | `PlayerManager.EquipItem` | Prefix（返回 false 吞掉原版） | 提灯 → `ToggleHolster`；其它物品放行 | 所有「装备」路径的汇合点（面板按钮 / 快速装备 / 拾取自动装备），与 HuntingRoads 挂瞄准镜同法 |
 | `ItemDescriptionPage.GetEquipButtonLocalizationId` | Postfix | 提灯 → 返回 `LANTERNBELT_Mount` | 不改控件只改文案，手柄提示与原版事件链全部保留 |
 | `ItemDescriptionPage.BuildItemDescription` | Postfix | 悬挂时 `__result += "\n" + Get("LANTERNBELT_Mounted")` | 与 HuntingRoads 给装镜的枪加描述行完全同法，不碰 UI 控件 |
+| `KeroseneLampItem.UpdateEffects` | Prefix / Postfix | 记下「正在更新特效的是哪盏灯」 | 只用于给下一行提供判定依据 |
+| `PlayerAnimation.Trigger_Generic_Ignite_Confirm` | Prefix（返回 false） | 若发起者是挂腰那盏灯 → 吞掉 | 见 §4.1，这是「按 L 卡手」的唯一根因 |
 | `Localization.Get` | Postfix | 只替换 `LANTERNBELT_*` 前缀的键 | 不引入本地化库、不污染游戏字符串表 |
 | `PlayerManager.Drop(GameObject,bool)` | Prefix | 挂腰的灯被丢弃 → 先 `Unhang(restoreActive:false)` | 否则父节点还在玩家身上，落地物体会跟着人走 |
 | `KeroseneLampItem.Toggle` | Postfix | 同步 `s_wantLit` | 玩家通过原版途径开关灯时，别让每帧校正把操作改回去 |

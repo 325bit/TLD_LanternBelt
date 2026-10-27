@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.0
+
+### Changed
+
+- **不再在屏幕中间弹红色提示**。灯亮不亮肉眼可见，悬挂状态只在物品介绍里显示一行「[提灯已悬挂]」。设置面板里的「显示屏幕提示」一并移除。
+
+### Fixed
+
+- **悬挂时按 `L` 会把手卡住**（无法装备枪械 / 石块 / 木炭，也无法与物品互动）。原因：`TurnOn` 会把 `m_TurnOnComplete` 清零，随后 `KeroseneLampItem.UpdateEffects` 会调 `PlayerAnimation.Trigger_Generic_Ignite_Confirm` 播第一人称点燃手势；灯不在手上，这段动画没有模型可收尾，手部状态机就一直停在点燃动作里。现在点亮后立即标记「点燃已完成」，并额外拦一层该手部动画，光照 / 热量 / 烧油全部照旧。
+
 ## 1.1.0
 
 ### Changed

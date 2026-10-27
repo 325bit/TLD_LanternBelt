@@ -341,7 +341,40 @@ internal static class LanternBeltManager
 
 		ReconcileLamp(s_hung, playerInitiated: true);
 
+		if (Cfg?.Verbose ?? false)
+		{
+			ModLog.Msg("[挂腰] 快捷键切灯" + DescribeHandsState());
+		}
+
 		Notify(s_wantLit ? Loc.LampOn : Loc.LampOff);
+	}
+
+	/// <summary>排查「按 L 之后手被卡住」时看这一行：手部是否启用、手上有没有东西。</summary>
+	private static string DescribeHandsState()
+	{
+		try
+		{
+			bool hands = false;
+			try
+			{
+				PlayerAnimation? anim = GameManager.GetPlayerAnimationComponent();
+				hands = anim != null && anim.FirstPersonHandsEnabled(s_hung);
+			}
+			catch
+			{
+				// 某些场景下该方法不可用
+			}
+
+			PlayerManager? pm = GameManager.GetPlayerManagerComponent();
+			GearItem? inHands = pm?.m_ItemInHands;
+			string held = inHands == null ? "<空手>" : inHands.gameObject.name;
+
+			return $" 手部启用={hands} 手持={held}";
+		}
+		catch
+		{
+			return string.Empty;
+		}
 	}
 
 	/// <summary>原版开关灯生效后，把我们的期望状态同步成实际状态。</summary>
@@ -735,11 +768,58 @@ internal static class LanternBeltManager
 			}
 
 			lamp.TurnOn(!playerInitiated);
+
+			// 关键：TurnOn 内部会把 m_On / m_TurnOnComplete 一起写成「开着但未完成」，
+			// 之后 KeroseneLampItem.UpdateEffects 会在 m_TurnOnEffectsDelay 之后调
+			// PlayerAnimation.Trigger_Generic_Ignite_Confirm —— 那是**第一人称点燃手势**。
+			// 灯不在手上时这个动画没有可绑定的模型，收不回来，整只手就锁死在点燃动作里
+			// （表现为不能装备其它物品、不能与物品互动）。这里直接标记「点燃已完成」跳过它。
+			SuppressIgniteAnimation(lamp);
 		}
 
 		// 关键：灯亮 ≠ 有热。HeatSource 是自己注册到 HeatSourceManager 的，
 		// 离场后重新激活不会再注册一次，所以每次校正都顺手补登。
 		SetHeat(gi, true);
+	}
+
+	/// <summary>
+	/// 让 <c>UpdateEffects</c> 跳过「点燃确认」手部动画。
+	/// <c>m_TurnOnComplete</c> 就是它读的那个开关（反汇编里 <c>cmp BYTE PTR [rbx+0xa5],0x0</c>），
+	/// 置真之后整段 <c>Trigger_Generic_Ignite_Confirm</c> 都不会执行，而光照 / 热量 / 烧油照旧。
+	/// </summary>
+	private static void SuppressIgniteAnimation(KeroseneLampItem lamp)
+	{
+		try
+		{
+			lamp.m_TurnOnComplete = true;
+		}
+		catch (Exception ex)
+		{
+			if (Cfg?.Verbose ?? false)
+			{
+				ModLog.Warning("标记点燃完成失败（可能会导致手部卡在点燃动作）：" + ex.Message);
+			}
+		}
+	}
+
+	/// <summary>这个提灯组件是否就是挂在腰上的那一盏（用于拦截它的手部动画）。</summary>
+	internal static bool IsHungLampComponent(KeroseneLampItem lamp)
+	{
+		GearItem? gi = s_hung;
+		if (gi == null || lamp == null)
+		{
+			return false;
+		}
+
+		try
+		{
+			var current = gi.m_KeroseneLampItem;
+			return current != null && current.Pointer == lamp.Pointer;
+		}
+		catch
+		{
+			return false;
+		}
 	}
 
 	private static void SetHeat(GearItem gi, bool want)
@@ -1063,22 +1143,8 @@ internal static class LanternBeltManager
 
 	private static void Notify(string message)
 	{
-		if (Cfg?.HudMessages ?? true)
-		{
-			try
-			{
-				Panel_HUD? hud = InterfaceManager.GetPanel<Panel_HUD>();
-				if (hud != null)
-				{
-					hud.DisplayWarningMessage(message);
-				}
-			}
-			catch
-			{
-				// HUD 不可用时只留日志
-			}
-		}
-
+		// 屏幕中间的红色警告字一律不弹：灯亮不亮肉眼可见，悬挂状态只放在物品介绍里提示。
+		// 保留日志，排查时仍然有据可查。
 		ModLog.Msg(message);
 	}
 

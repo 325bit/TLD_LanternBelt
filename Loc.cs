@@ -50,7 +50,7 @@ internal static class Loc
 				return UseChinese ? "悬挂/卸下" : "Hang / Take off";
 
 			case "LANTERNBELT_Mounted":
-				return UseChinese ? "[已悬挂在腰带上]" : "[Hung on your belt]";
+				return UseChinese ? "[提灯已悬挂]" : "[Lantern hung]";
 
 			default:
 				return key;
