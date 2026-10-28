@@ -2,7 +2,7 @@
 
 [English](#english) · [中文](#中文)
 
-![version](https://img.shields.io/badge/version-1.7.0-informational)
+![version](https://img.shields.io/badge/version-1.7.5-informational)
 
 ![game](https://img.shields.io/badge/The%20Long%20Dark-2.55-success)
 
@@ -22,7 +22,7 @@ A The Long Dark mod that hangs a kerosene lantern on your belt, keeping both han
 
 - Select a lantern in your inventory and the "Equip" button becomes "Hang / Take down": one click puts it on your belt and frees both hands, another click puts it back in the bag.
 - While it is hung, the item description ends with an extra line "[Lantern hung]"; take the lantern down and that line disappears.
-- While it is hung, the HUD shows a white fuel bar with "Fuel 87% · Condition 100%" right under it, in the place where the vanilla durability bar sits; both disappear once you take the lantern down.
+- While it is hung, a white fuel bar appears in the bottom-right corner with "Fuel 87% · Condition 100%" right under it; both disappear once you take the lantern down.
 - It lights up by itself when hung: light radius, burn rate and warmth all use the vanilla numbers, so the lantern on your belt really burns fuel and really gives off heat.
 - Hanging does not use your hands: you can still carry a rifle, hold a flare, climb a rope, light a fire and open doors.
 
@@ -49,7 +49,7 @@ A The Long Dark mod that hangs a kerosene lantern on your belt, keeping both han
 2. Click "Hang / Take down" on the item panel — the lantern goes to your belt and lights up, and "[Lantern hung]" appears in its description
 3. Press `L` to switch the lantern on and off; click "Hang / Take down" again to take it down and the extra line goes away
 
-Settings live under **Options → Mod Settings → Lantern Belt**. The settings page itself is in Chinese; the names below are the in-game text with a short English gloss.
+Settings live under **Options → Mod Settings → Lantern Belt**. The settings page itself is in Chinese; the names below are the in-game text with a short English gloss. Every slider takes effect the moment you move it — no reload needed.
 
 ### Settings
 
@@ -68,10 +68,12 @@ Settings live under **Options → Mod Settings → Lantern Belt**. The settings 
 | 蹲下下移量（米） / crouch drop | How far the anchor drops when you crouch. Still too high, raise it; sinking into your legs, lower it | 0.35 |
 | 整体缩放 / overall scale | Usually has to come down to about 0.5 when the anchor reference is "Camera" | 1.0 |
 | 每帧对齐挂点 / follow anchor every frame | Off leaves the lantern behind in the world; only for troubleshooting | On |
-| 显示灯油与耐久 / HUD readout | Show fuel and condition on the HUD while the lantern is hung; off shows nothing at all | On |
-| 显示油量条 / fuel bar | Draw a bar above the percentages whose length is the remaining fuel, styled like the vanilla durability bar; off keeps the text only | On |
-| 提示水平偏移 / readout X offset | Move the readout sideways from the vanilla durability bar; positive is right | 0 |
-| 提示垂直偏移 / readout Y offset | Positive moves the readout up, negative moves it down. The default 0 is exactly where the vanilla durability bar sits; the old default was -70, so set it back to 0 if your config still says -70 | 0 |
+| 显示灯油与耐久 / HUD readout | Master switch: off hides the bar and the text together | On |
+| 显示油量条 / fuel bar | Controls only the bar: off keeps the percentage line. Hidden anyway when the master switch is off | On |
+| 油量条宽度 / bar width | Length of the bar in UI units. It is stretched to be longer than the text line, so a small value never makes it shorter than the text | 200 |
+| 油量条粗细 / bar thickness | Thickness of the bar in UI units. 0 = thin it down automatically to roughly a sixteenth of the width, close to the vanilla durability bar; try 12 to 20 if you want a chunkier bar | 0 |
+| 距屏幕右边缘 / margin from right | Distance from the right end of the bar to the right edge of the screen; larger moves the whole block left, 0 snaps it to the edge | 150 |
+| 距屏幕底边缘 / margin from bottom | Distance from the bottom of the text line to the bottom edge of the screen; larger moves the whole block up | 110 |
 | 提示字号 / readout font size | Text size of the readout | 20 |
 | 提示语言 / message language | Affects the on-screen messages and the inventory button text | Auto |
 | 输出详细日志 / verbose logging | Writes anchor, renderers, layer and heat source into `MelonLoader/Latest.log` | Off |
@@ -113,7 +115,7 @@ Turn on "Verbose logging"; the log gains a line starting with `[挂腰] 诊断`.
 Make sure `ModData.dll` is in `Mods/` — that is what remembers the hung state across scenes. A "[挂腰/存档] 写入失败" line in the log means it is missing or not working.
 
 **No fuel bar or percentage line on the HUD.**
-Check that "HUD readout" is on, and "fuel bar" too if you expect the bar. If they are on but the readout sits on top of something else, move it with the X and Y offset sliders.
+Check that "HUD readout" is on, and "fuel bar" too if you expect the bar. If they are on but the readout sits on top of something else, move it with the margin-from-right and margin-from-bottom sliders.
 
 ### License
 
@@ -131,7 +133,7 @@ MIT — see [LICENSE](LICENSE).
 
 - 在物品界面选中背包里的提灯，原本的「装备」按钮变成「悬挂/卸下」，点一下挂到腰上、双手恢复为空，再点一次收回背包。
 - 悬挂时物品介绍正文末尾会多出一行「[提灯已悬挂]」，卸下后这行字消失。
-- 悬挂时 HUD 上会画出一根白色油量条，条下方写着「灯油 87% · 耐久 100%」，位置就在原版那根耐久条待的地方；卸下后整块消失。
+- 悬挂时屏幕右下角会画出一根白色油量条，条下方写着「灯油 87% · 耐久 100%」；卸下后整块消失。
 - 挂上去自动点燃：照明范围、烧油速度、取暖效果全部沿用原版数值，腰上那盏灯是真的在烧油、真的在散热。
 - 挂腰时不占用手部：可以同时拿步枪、信号棒、爬绳、生火、开门。
 
@@ -158,7 +160,7 @@ MIT — see [LICENSE](LICENSE).
 2. 在右侧物品面板点「悬挂/卸下」——提灯挂到腰上并亮起，介绍里出现「[提灯已悬挂]」
 3. 按 `L` 开关灯；再点一次「悬挂/卸下」即从腰上卸下，那行字随之消失
 
-设置入口：**选项 → Mod Settings → Lantern Belt**。
+设置入口：**选项 → Mod Settings → Lantern Belt**。所有滑条拖动即时生效，不用重进游戏。
 
 ### 设置
 
@@ -177,10 +179,12 @@ MIT — see [LICENSE](LICENSE).
 | 蹲下下移量（米） | 蹲下时挂点降低多少。灯还偏高就调大，压进腿里就调小 | 0.35 |
 | 整体缩放 | 挂点选「相机」时通常要降到 0.5 左右 | 1.0 |
 | 每帧对齐挂点 | 关掉后灯会留在原地，只在排查问题时关 | 开 |
-| 显示灯油与耐久 | 挂腰时在 HUD 上显示灯油与耐久百分比，关掉则什么都不显示 | 开 |
-| 显示油量条 | 在百分比上方画一根代表剩余灯油的条，样式照抄原版耐久条；关掉只留文字 | 开 |
-| 提示水平偏移 | 相对原版耐久条左右移动，正值向右 | 0 |
-| 提示垂直偏移 | 正值向上、负值向下。默认 0 就是原版耐久条的位置；旧版默认是 -70，配置里还写着 -70 的建议调回 0 | 0 |
+| 显示灯油与耐久 | 总开关：关掉后条和文字一起消失 | 开 |
+| 显示油量条 | 只控制那根条：关掉后只留百分比文字；总开关关掉时这一项无论开不开都不显示 | 开 |
+| 油量条宽度 | 条有多长（界面单位）。会自动拉长到比文字更长，设小了也不会比文字短 | 200 |
+| 油量条粗细 | 条的厚度（界面单位）。0 = 按宽度自动压细（约宽度的十六分之一，接近原版耐久条的比例）；想要厚一点填 12~20 | 0 |
+| 距屏幕右边缘 | 条的右端离屏幕右边多远；越大整块越往左，填 0 贴边 | 150 |
+| 距屏幕底边缘 | 那行文字的底边离屏幕底边多高；越大整块越往上 | 110 |
 | 提示字号 | HUD 提示的文字大小 | 20 |
 | 提示语言 | 影响屏幕提示与物品栏按钮文字 | 自动 |
 | 输出详细日志 | 把挂点、渲染器、层、热量源写进 `MelonLoader/Latest.log` | 关 |
@@ -222,7 +226,7 @@ MIT — see [LICENSE](LICENSE).
 确认 `Mods/` 里有 `ModData.dll`——跨场景记住悬挂状态靠它。日志里出现「[挂腰/存档] 写入失败」就是没装或没生效。
 
 **HUD 上没有油量条 / 灯油那行？**
-先看设置里「显示灯油与耐久」是不是被关掉了，想要条还要确认「显示油量条」是开的；开着但压在别的东西上，就用水平 / 垂直偏移把它挪开。
+先看设置里「显示灯油与耐久」是不是被关掉了，想要条还要确认「显示油量条」是开的；开着但压在别的东西上，就用「距屏幕右边缘 / 距屏幕底边缘」把它挪开。
 
 ### 许可证
 

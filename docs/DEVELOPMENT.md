@@ -188,7 +188,7 @@ ModData 侧 `[ModData] Cache Saved (212)` 与 `Mods/ModData/sandbox3.moddata` �
 恢复时 `s_restoring = true`，`Apply` 会放宽背包校验——`FindLantern` 已经证明那盏灯在
 `Inventory.m_Items` 里，不需要再被自己的守卫拆一次。
 
-### HUD 提示：为什么必须自己画（1.6.0 ~ 1.7.0）
+### HUD 提示：为什么必须自己画（1.6.0 ~ 1.7.1）
 
 玩家要的「挂腰时看得见耐久 / 灯油」，原版没有现成出口：
 
@@ -205,16 +205,91 @@ ModData 侧 `[ModData] Cache Saved (212)` 与 `Mods/ModData/sandbox3.moddata` �
 
 - 字体 `GameManager.GetFontManager().GetUIFontForCharacterSet(...)`：中文走 `CharacterSet.CJK`，
   英文走 `Latin`（拉丁字库缺中文字形，反之亦然）。
-- 锚点取 `Panel_HUD.m_EquipItemPopup.m_ObjectDuration`（原版耐久条）的**世界坐标**，
-  换算到面板根的本地空间后加偏移。**只借坐标、不做父节点**：那根条所在的子树整套隐藏时
-  会把子物体一起停用，挂进去等于跟着一起消失。
 - 父节点固定 `Panel_HUD.transform`，跟着 HUD 一起显隐；`depth = 100` 压在常规 HUD 文字之上。
+  层级必须是**三层**：容器（空物体，只管位置）→ 文字子物体 + 条子物体，
+  **绝不把 `UILabel` 加在容器身上**（1.7.5 踩过，见下）。
+  整块挂在 `Panel_HUD` 下，**不挂进原版控件的子树**：那棵子树整套 `SetActive(false)` 时会一起消失。
 - 数值：灯油 `KeroseneLampItem.GetPercentFuelRemaining()`（0~100），耐久 `GearItem.m_CurrentHP`（0~100），
   两者都取整——文字只在整数变化时才重新赋值，避免每帧重建 NGUI 网格。
 
 驱动点在 `Panel_HUD.Update` 的 Postfix：面板实例直接递进来，不必走 `InterfaceManager.GetPanel<T>()`
 （面板未加载时会抛）；HUD 停用时 `Update` 本来就不跑，菜单 / 过场状态不用额外判断。
 场景切换时 `OnSceneChanged` 调 `HudReadout.Reset()`，因为 HUD 面板连同子物体一起被销毁。
+
+#### 定位：不要用原版控件当锚点（1.7.1 实机踩坑）
+
+1.6.0 / 1.7.0 把锚点取在 `Panel_HUD.m_EquipItemPopup.m_ObjectDuration` 上。**实测这条链是断的**：
+该字段在 2.55 里取不到，代码退回 `m_EquipPopupWidget`，而它在弹出框隐藏时位于原点——
+结果整块提示飘到**屏幕正中央**（玩家截图：文字横在视野中心，条根本没建出来）。
+
+现在按屏幕右下角定位，一步不依赖原版控件。**主路径是相机投影**（1.7.4 起）：
+
+```csharp
+Camera cam = UICamera.currentCamera ?? UICamera.mainCamera;   // 只用 UI 相机
+Vector3 world = cam.ViewportToWorldPoint(new Vector3(1f, 0f, cam.nearClipPlane));
+Vector3 corner = hudRoot.InverseTransformPoint(world);
+```
+
+相机投影的单位天然正确，不受 UIRoot 缩放风格、面板偏移影响。**不要用 `Camera.main` 兜底**：
+那是玩家视角的世界相机，视口坐标与 UI 面板不在同一空间，算出来会把整块提示扔出屏幕。
+拿不到 UI 相机才退回推算：
+
+```csharp
+int h = uiRoot.activeHeight;                       // 2.55 的 UIRoot 只有 activeHeight
+float w = h * Screen.width / Screen.height;        // **没有 activeWidth，必须自己按宽高比算**
+Vector3 center = hudRoot.InverseTransformPoint(uiRoot.transform.position);  // 面板偏移也要算进去
+Vector3 bottomRight = center + new Vector3(w * 0.5f, -h * 0.5f, 0f);
+```
+
+`UIRoot` 拿不到时退到 `UIPanel.width/height`，再不行按 1920×1080 估。
+
+边距的语义（1.7.5 起）按玩家会理解的方式定义：**距屏幕右边缘**量的是油量条**右端**到屏幕右边的距离，
+**距屏幕底边缘**量的是那行文字**底边**到屏幕底边的距离。所以容器原点（= 整块中心）要再内缩半个块：
+
+```csharp
+blockW = max(条宽, 文字宽);  blockH = 条高 + 间隙 + 文字高;
+containerPos = corner + new Vector3(-marginRight - blockW * 0.5f,
+                                     marginBottom + blockH * 0.5f, 0f);
+```
+
+块内再按「顶边对齐条、底边对齐文字」排：条中心 `y = +blockH/2 - 条高/2`，
+文字中心 `y = -blockH/2 + 文字高/2`。1.7.4 及以前量的是「整块中心到两边」，
+条会有一半伸到屏幕外，边距数值与观感对不上。
+
+#### 「拖了没反应」怎么定位（1.7.5）
+
+这条日志**不受「输出详细日志」开关控制**，拖任意一项就打印一次：
+
+```
+[挂腰/布局] 设置 宽=188.3 粗=9.1 右=165.5 底=128.0 → 条=188x9 实测=188x9（模板 200x10）
+            整块=188x40 容器=1234.5,-512.0 文字=-22.0 角=1420.0,-396.0（相机投影）
+```
+
+三种读数对应三种病因：
+
+| 现象 | 结论 |
+|---|---|
+| 日志不出现 | `Panel_HUD.Update` 没跑（面板被停用），或挂腰状态丢了 |
+| 「设置」那半截不跟着变 | 值没进 `Settings` 字段，问题在 ModSettings 绑定 |
+| 「条=」不变 | 写入被 early-return 吃掉，或 `s_widgets` 里不是真正绘制的那批控件 |
+| 「实测=」与「条=」差很远 | 模板基线不对（混进了标签 / 隐藏控件），或 `pivotOffset` 读错 |
+| 「容器=」不变 | 有别的代码在写同一个 `Transform`（1.7.5 的病因就是这个） |
+| 「角=」后面写「兜底 1920x1080」 | UI 相机与 UIRoot 都没取到，位置是估的 |
+
+#### 容器位置被自己覆盖（1.7.5 真因）
+
+1.7.3 / 1.7.4 报「边距拖了不动」时，日志显示 `条=` 会变、`容器=` 恒定 `0.0,-36.2`。
+原因不在相机、也不在 `UIRoot`，而是**层级设计错了**：
+
+```csharp
+UILabel label = root.AddComponent<UILabel>();          // 文字长在容器身上
+...
+s_label.transform.localPosition = new Vector3(0, y, 0); // 于是这句就是写容器位置
+```
+
+`s_label.transform == s_root.transform`，`PlaceBarAndLabel` 每帧把刚按边距算好的容器位置
+覆盖成「文字相对条的中心偏移」——边距算出来的值连一帧都活不过。
+**结论：布局容器必须是空物体，任何 `UIWidget`（包括 `UILabel`）都不能加在它身上。**
 
 #### 油量条：克隆而不是照抄 sprite 名（1.7.0）
 
@@ -233,6 +308,37 @@ ModData 侧 `[ModData] Cache Saved (212)` 与 `Mods/ModData/sandbox3.moddata` �
 - 每帧只写 `fillAmount = fuel / 100`，且差值 > 0.002 才赋值——它会 `MarkAsChanged` 重建网格。
 - 模板可能比 HUD 本体晚就绪：`BarAlive()` 只看条本体，缺模板时按 3 秒间隔补建，
   文字先立起来，不至于整块不显示。
+
+#### 尺寸与设置热更新（1.7.2 → 1.7.3）
+
+1.7.1 上实机后玩家报「条横贯半个屏幕」「所有滑条都没反应」「显示油量条关不掉」；1.7.2 修完后
+又报「粗细和两个边距拖了没感觉」「文字压在条上」。踩过的坑按顺序记：
+
+- **缩放基准不能取「第一个 widget」**。克隆体常常是个没有 `UIWidget` 的容器，第一个子 widget
+  可能只是条上的一小块；拿它当分母，比例会算成好几倍，整条被撑开。
+- **不要靠「设置变了就重建」来响应滑条**。重建本身偏重，玩家改动量小时（边距十几像素、
+  粗细两像素）视觉上等于没反应，还伴随闪烁。1.7.3 改成 `ApplyLayout` **每帧直接写**：
+  位置、条宽、条粗、字号、文字落点，全部当场生效。为了不把 NGUI 打爆，每个值都先跟
+  「上次写进去的值」比过，没变就不赋值（`s_appliedWidth` / `s_appliedHeight` / `s_appliedFontSize`）。
+  只有**换语言**才重建，因为要换字体与字形集。
+- **尺寸走「基线绝对映射」而不是「乘比例」**。克隆时把每个控件的 `width` / `height` /
+  `localPosition` 存进 `BarBase[]`，之后按 `目标 / 基线` 独立换算：
+  `width = base.Width * (目标宽 / 基线宽)`、`height = base.Height * (目标高 / 基线高)`。
+  最终包围盒必然等于设置里的数字，反复拖滑条也不会累积误差，模板再怪也能被压回目标尺寸。
+- **基线只能统计真正画出来的 sprite**（1.7.5）。`GetComponentsInChildren<UIWidget>(true)` 会把
+  原版耐久条上那行「100%」百分比标签也算进来，它又宽又高，基线被撑成 `200x61`（真实条体只有几像素），
+  于是按 `目标高 ÷ 61` 缩出来的条永远在 3~11 像素之间打转——玩家看到的「粗细没反应」就是这个。
+  现在 `CaptureBaseline` 与 `TryBarBounds` 都过一道 `IsDrawable()`：`UILabel` 与
+  `!activeInHierarchy` 的控件一律排除。
+- **文字落点要减掉文字自己的半高**。块内按顶边/底边对齐：条中心 `= +块高/2 - 条高/2`，
+  文字中心 `= -块高/2 + 文字高/2`；只减间隙会让文字上半截压在条上（实机截图就是这样）。
+- **布尔开关必须双向写**。`if (x && !active) SetActive(true)` 少了「关掉时隐藏」这一半，
+  开关就成了摆设。正确写法：`if (bar.activeSelf != cfg.ShowHudBar) bar.SetActive(cfg.ShowHudBar)`。
+- **文字宽度要缓存**。`MeasureLabel` 里的 `UILabel.ProcessText()` 只在文案或字号变化时重算，
+  否则每帧让 NGUI 重排文本是白花钱。
+
+条的中心与尺寸取**所有可见 sprite 的并集包围盒**（`TryBarBounds`，用 `pivotOffset` 换算每条边），
+不是某一个 widget 的 pivot——根节点没有 widget 时单看一个会把文字放偏。
 
 ## 6. 挂点
 
@@ -266,9 +372,11 @@ ModData 侧 `[ModData] Cache Saved (212)` 与 `Mods/ModData/sandbox3.moddata` �
 4. **`Time.timeScale > 0` 作为按键闸门**：假设开背包不暂停时间；若暂停，`L` 在背包里不响应，无副作用。
 5. **恢复不再依赖「窗口是否开着」**：意图快照在内存里，跨场景 / 读档任意时刻都能对上；
    30 秒只是「背包里一直找不到那盏灯」的放弃时限，超时才会清记录。
-6. **HUD 提示的落点从 1.7.0 起不再是估算值**：条是原版耐久条的克隆体、`localPosition` 归零，
-   所以 `HudOffsetY = 0` 就是「长在原版条的位置上」，换分辨率、换 UI 缩放都会跟着走。
-   只剩文字与条之间的间距是按字号算的（`max(4, fontSize * 0.55)`），字调得很大时需要看一眼。
+6. **HUD 提示的落点按屏幕角算，不跟原版控件走**（1.7.1）：整块摆在「右下角 − 边距」处，
+   换分辨率、换 UI 缩放都会跟着走，也不需要玩家校准像素值。块内顶边是条、底边是文字，
+   间隙 `max(2, 字号 × 0.2)`，两者不重叠。
+7. **布局容器不能带 `UIWidget`**（1.7.5）：容器是空物体，文字与条是它的子物体。
+   把 `UILabel` 加在容器上会让「排文字」那一句直接改写容器位置，边距随之失效。
    若日志里 `面板=False`（HUD 根上找不到 `UIPanel`），标签不会被任何面板绘制，
    此时应改为挂到某个 `UIPanel` 子树下。
 
@@ -289,11 +397,16 @@ ModData 侧 `[ModData] Cache Saved (212)` 与 `Mods/ModData/sandbox3.moddata` �
    - `Mods/ModData/<存档槽>.moddata` 是个 zip，条目 `LanternBelt` 里能直接读到
      `1|GEAR_KeroseneLamp_Spelunkers|97.166|0`（挂腰|物品名|燃油百分比|亮着）
 6. HUD 提示不出现 / 位置不对：开详细日志看
-   `[挂腰] HUD 提示已建立：锚点=… 本地坐标=… 条=已建/缺模板 面板=True/False`。
+   `[挂腰] HUD 提示已建立：锚点=(x, y, z) 条=已建/缺模板 面板=True/False`。
+   - 锚点是容器（整块中心）的位置，正常应是右下角方向的正 x、负 y（如 `(810, -430, 0)`）；
+     `x` 恒为 0 或与边距无关，说明另有代码在写同一个 `Transform`（见 §6 第 7 条）；
+     明显为 `(0, 0, 0)` 说明 `UIRoot` 与面板都没拿到，走了 1920×1080 兜底
+   - `[挂腰/布局]` 那行末尾带 `角=…（相机投影 / UIRoot … / 面板 … / 兜底 …）`，
+     直接告诉你位置是按哪条路径算出来的
    - `面板=False` 说明没挂进任何 `UIPanel`，标签不会被绘制
-   - `条=缺模板` 说明 `EquipItemPopup.m_ObjectDuration` 还不可用，会按 3 秒间隔重试
+   - `条=缺模板` 说明三级查找都没找到条模板，会按 3 秒间隔重试
    - `[挂腰] 油量条已建立：模板=… 尺寸=WxH 填充=… sprite=…` 一次给全条的尺寸与精灵名，
-     `尺寸=0x0` 或 `填充=未找到` 就说明模板结构与预期不同
+     `尺寸=0x0` 或 `填充=未找到` 就说明模板结构与预期不同（尺寸是**拉宽前**的模板原始尺寸）
    - `[挂腰] 油量条建好了但没认出填充 sprite` → 条会是静态的，把上一行一起发作者
 
 ## 9. 设计约束（改代码时别破坏）

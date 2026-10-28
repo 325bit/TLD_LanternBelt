@@ -76,22 +76,32 @@ internal class Settings : JsonModSettings
 	[Section("HUD 提示")]
 
 	[Name("显示灯油与耐久")]
-	[Description("提灯挂在腰上时，在 HUD 上显示灯油与耐久百分比（原版只在物品拿在手上时才显示耐久条）。关闭则什么都不显示。")]
+	[Description("总开关：关掉后条和文字一起消失（原版只在物品拿在手上时才显示耐久条）。只想关掉条、保留文字，请用下面那项「显示油量条」。")]
 	public bool ShowHudReadout = true;
 
 	[Name("显示油量条")]
-	[Description("在百分比上方加一根条，长度就是剩余灯油。样式照抄原版手持物品的耐久条。关掉只留文字。")]
+	[Description("只控制那根条：关掉后只留百分比文字。上面的总开关关掉时，这一项无论开不开都不显示。")]
 	public bool ShowHudBar = true;
 
-	[Name("提示水平偏移")]
-	[Description("相对原版物品耐久条的位置左右移动，正值向右。觉得挡住视线就往边上挪。")]
-	[Slider(-400f, 400f)]
-	public float HudOffsetX = 0f;
+	[Name("油量条宽度")]
+	[Description("油量条有多长（界面单位，1080p 下约等于像素）。会自动加长到比下面那行文字更长，所以这里设小了也不会比文字短。")]
+	[Slider(60f, 600f)]
+	public float HudBarWidth = 200f;
 
-	[Name("提示垂直偏移")]
-	[Description("正值向上、负值向下。默认 0 = 正好长在原版耐久条的位置上（挂腰时那条本来是空的）。旧版本这里默认是 -70，升级后建议调回 0。")]
-	[Slider(-400f, 400f)]
-	public float HudOffsetY = 0f;
+	[Name("油量条粗细")]
+	[Description("油量条有多厚（界面单位，1080p 下约等于像素）。0 = 按宽度自动压细（大约宽度的十六分之一，接近原版耐久条的比例）；嫌细填 12~20。")]
+	[Slider(0f, 40f)]
+	public float HudBarHeight = 0f;
+
+	[Name("距屏幕右边缘")]
+	[Description("油量条**右端**离屏幕右边有多远。数值越大整块越往左，填 0 会贴边。")]
+	[Slider(0f, 600f)]
+	public float HudMarginRight = 150f;
+
+	[Name("距屏幕底边缘")]
+	[Description("那行文字**底边**离屏幕底边有多高。数值越大整块越往上，觉得挡住底部状态图标就调大。")]
+	[Slider(0f, 600f)]
+	public float HudMarginBottom = 110f;
 
 	[Name("提示字号")]
 	[Description("HUD 提示的字号。分辨率高觉得太小、或嫌它挡画面就调。")]
