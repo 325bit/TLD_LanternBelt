@@ -9,6 +9,12 @@ namespace LanternBelt;
 /// </summary>
 internal static class Loc
 {
+	/// <summary>当前是否走中文文案；HUD 提示据此选字体（中文要 CJK 字库，拉丁字库缺字形）。</summary>
+	internal static bool UseChineseText
+	{
+		get { return UseChinese; }
+	}
+
 	private static bool UseChinese
 	{
 		get
@@ -40,6 +46,20 @@ internal static class Loc
 	internal static string LampOn => UseChinese ? "提灯已点亮" : "Lantern lit";
 
 	internal static string LampOff => UseChinese ? "提灯已熄灭" : "Lantern extinguished";
+
+	/// <summary>
+	/// HUD 上那一行「灯油 / 耐久」。取整到百分比——精确到小数没有意义，
+	/// 而且文字只在整数变化时才重设，免得每帧都重建网格。
+	/// </summary>
+	internal static string HudLine(float fuelPercent, float conditionPercent)
+	{
+		int fuel = Mathf.Clamp(Mathf.RoundToInt(fuelPercent), 0, 100);
+		int condition = Mathf.Clamp(Mathf.RoundToInt(conditionPercent), 0, 100);
+
+		return UseChinese
+			? $"灯油 {fuel}% · 耐久 {condition}%"
+			: $"Fuel {fuel}% · Condition {condition}%";
+	}
 
 	/// <summary>把本 mod 的本地化键翻成文本；不认识的键原样返回。</summary>
 	internal static string Term(string key)

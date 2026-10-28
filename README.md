@@ -2,7 +2,7 @@
 
 [English](#english) · [中文](#中文)
 
-![version](https://img.shields.io/badge/version-1.5.1-informational)
+![version](https://img.shields.io/badge/version-1.6.0-informational)
 
 ![game](https://img.shields.io/badge/The%20Long%20Dark-2.55-success)
 
@@ -22,6 +22,7 @@ A The Long Dark mod that hangs a kerosene lantern on your belt, keeping both han
 
 - Select a lantern in your inventory and the "Equip" button becomes "Hang / Take down": one click puts it on your belt and frees both hands, another click puts it back in the bag.
 - While it is hung, the item description ends with an extra line "[Lantern hung]"; take the lantern down and that line disappears.
+- While it is hung, the HUD shows "Fuel 87% · Condition 100%" next to where the vanilla durability bar sits; the line disappears once you take the lantern down.
 - It lights up by itself when hung: light radius, burn rate and warmth all use the vanilla numbers, so the lantern on your belt really burns fuel and really gives off heat.
 - Hanging does not use your hands: you can still carry a rifle, hold a flare, climb a rope, light a fire and open doors.
 
@@ -67,6 +68,10 @@ Settings live under **Options → Mod Settings → Lantern Belt**. The settings 
 | 蹲下下移量（米） / crouch drop | How far the anchor drops when you crouch. Still too high, raise it; sinking into your legs, lower it | 0.35 |
 | 整体缩放 / overall scale | Usually has to come down to about 0.5 when the anchor reference is "Camera" | 1.0 |
 | 每帧对齐挂点 / follow anchor every frame | Off leaves the lantern behind in the world; only for troubleshooting | On |
+| 显示灯油与耐久 / HUD readout | Show fuel and condition on the HUD while the lantern is hung; off shows nothing at all | On |
+| 提示水平偏移 / readout X offset | Move the readout sideways from the vanilla durability bar; positive is right | 0 |
+| 提示垂直偏移 / readout Y offset | Positive moves the readout up, negative moves it down | -70 |
+| 提示字号 / readout font size | Text size of the readout | 20 |
 | 提示语言 / message language | Affects the on-screen messages and the inventory button text | Auto |
 | 输出详细日志 / verbose logging | Writes anchor, renderers, layer and heat source into `MelonLoader/Latest.log` | Off |
 
@@ -106,6 +111,9 @@ Turn on "Verbose logging"; the log gains a line starting with `[挂腰] 诊断`.
 **The lantern is not on my belt after a scene change.**
 Make sure `ModData.dll` is in `Mods/` — that is what remembers the hung state across scenes. A "[挂腰/存档] 写入失败" line in the log means it is missing or not working.
 
+**No fuel or condition line on the HUD.**
+Check that "HUD readout" is on. If it is on but the text sits on top of something else, move it with the X and Y offset sliders.
+
 ### License
 
 MIT — see [LICENSE](LICENSE).
@@ -122,6 +130,7 @@ MIT — see [LICENSE](LICENSE).
 
 - 在物品界面选中背包里的提灯，原本的「装备」按钮变成「悬挂/卸下」，点一下挂到腰上、双手恢复为空，再点一次收回背包。
 - 悬挂时物品介绍正文末尾会多出一行「[提灯已悬挂]」，卸下后这行字消失。
+- 悬挂时 HUD 上会显示「灯油 87% · 耐久 100%」，位置贴着原版那根耐久条；卸下后这行字消失。
 - 挂上去自动点燃：照明范围、烧油速度、取暖效果全部沿用原版数值，腰上那盏灯是真的在烧油、真的在散热。
 - 挂腰时不占用手部：可以同时拿步枪、信号棒、爬绳、生火、开门。
 
@@ -167,6 +176,10 @@ MIT — see [LICENSE](LICENSE).
 | 蹲下下移量（米） | 蹲下时挂点降低多少。灯还偏高就调大，压进腿里就调小 | 0.35 |
 | 整体缩放 | 挂点选「相机」时通常要降到 0.5 左右 | 1.0 |
 | 每帧对齐挂点 | 关掉后灯会留在原地，只在排查问题时关 | 开 |
+| 显示灯油与耐久 | 挂腰时在 HUD 上显示灯油与耐久百分比，关掉则什么都不显示 | 开 |
+| 提示水平偏移 | 相对原版耐久条左右移动，正值向右 | 0 |
+| 提示垂直偏移 | 正值向上、负值向下 | -70 |
+| 提示字号 | HUD 提示的文字大小 | 20 |
 | 提示语言 | 影响屏幕提示与物品栏按钮文字 | 自动 |
 | 输出详细日志 | 把挂点、渲染器、层、热量源写进 `MelonLoader/Latest.log` | 关 |
 
@@ -205,6 +218,9 @@ MIT — see [LICENSE](LICENSE).
 
 **换个场景提灯就不在腰上了？**
 确认 `Mods/` 里有 `ModData.dll`——跨场景记住悬挂状态靠它。日志里出现「[挂腰/存档] 写入失败」就是没装或没生效。
+
+**HUD 上没有灯油 / 耐久那行？**
+先看设置里「显示灯油与耐久」是不是被关掉了；开着但字压在别的东西上，就用水平 / 垂直偏移把它挪开。
 
 ### 许可证
 

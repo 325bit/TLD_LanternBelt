@@ -19,10 +19,12 @@
 | `LanternBeltMod.cs` | MelonMod 入口：注册设置、绑定日志、每帧驱动、`L` 键 |
 | `Settings.cs` | ModSettings 面板与落盘（`Mods/LanternBelt.json`） |
 | `Core/LanternBeltManager.cs` | 状态机 + 每帧校正 + 渲染/热量接管 + 挂点 + 读档恢复 |
+| `Core/HudReadout.cs` | 挂腰时的 HUD 提示（灯油 / 耐久），自建 `UILabel` 并锚在原版耐久条上 |
 | `Patches/PlayerManager_EquipItem.cs` | 物品栏切换入口、丢弃前收起、原版开关灯同步 |
 | `Patches/ItemDescriptionPage_EquipButtonLabel.cs` | 装备按钮文案「悬挂/卸下」（恒定文案） |
 | `Patches/ItemDescriptionPage_Description.cs` | 悬挂时在物品介绍末尾追加「[已悬挂在腰带上]」 |
 | `Patches/Localization_Get.cs` | 运行时翻译本 mod 的 `LANTERNBELT_*` 键 |
+| `Patches/PanelHUD_Update.cs` | 借 HUD 每帧更新刷新挂腰提示 |
 | `Loc.cs` | 屏幕提示与按钮文案的中英对照 |
 | `ModLog.cs` | 静态日志出口（静态类拿不到实例 Logger） |
 
@@ -126,6 +128,7 @@
 | `Localization.Get` | Postfix | 只替换 `LANTERNBELT_*` 前缀的键 | 不引入本地化库、不污染游戏字符串表 |
 | `PlayerManager.Drop(GameObject,bool)` | Prefix | 挂腰的灯被丢弃 → 先 `Unhang(restoreActive:false, forget:true)` | 否则父节点还在玩家身上，落地物体会跟着人走；丢弃是玩家表态，意图一起清 |
 | `KeroseneLampItem.Toggle` | Postfix | 同步 `s_wantLit` | 玩家通过原版途径开关灯时，别让每帧校正把操作改回去 |
+| `Panel_HUD.Update` | Postfix | 挂着灯时刷新「灯油 / 耐久」那一行，否则隐藏 | 面板实例直接可拿（不必 `GetPanel<T>()`），HUD 停用时 `Update` 不跑，菜单状态天然不用判断 |
 
 驱动：`MelonMod.OnUpdate` → `LanternBeltManager.Tick()`（每帧：挂着就 `Apply`，没挂就 `ReconcileIntent`）
 + `OnSceneWasLoaded` → 更新意图快照的镇定期并重写一次记录。
@@ -185,6 +188,34 @@ ModData 侧 `[ModData] Cache Saved (212)` 与 `Mods/ModData/sandbox3.moddata` �
 恢复时 `s_restoring = true`，`Apply` 会放宽背包校验——`FindLantern` 已经证明那盏灯在
 `Inventory.m_Items` 里，不需要再被自己的守卫拆一次。
 
+### HUD 提示：为什么必须自己画一行（1.6.0）
+
+玩家要的「挂腰时看得见耐久 / 灯油」，原版没有现成出口：
+
+- `EquipItemPopup` 才是画那根耐久条的地方，而它由 `PlayerManager.m_ItemInHands` 驱动——
+  **灯挂到腰上时手是空的**，所以整块不显示。
+- 就算把手里的东西硬塞成提灯，`EquipItemPopup.Update`（RVA `0x66e630`）的取数分支是
+  `TorchItem.GetBurnProgress` / `FlareItem.GetNormalizedBurnTimeLeft` / `FlashlightItem.GetNormalizedCharge` /
+  `NoiseMakerItem.GetNormalizedWickTimeLeft` / 兜底 `GearItem.GetNormalizedCondition`，
+  **没有 `KeroseneLampItem` 分支**——灯油永远不会出现在那根条上。
+- `KeroseneLampItem.m_HUD` 引用只用于 `Panel_HUD.CancelItemProgressBar`（加注被中断时收进度条），
+  与显示无关。
+
+所以 `Core/HudReadout.cs` 自建一个 `UILabel`：
+
+- 字体 `GameManager.GetFontManager().GetUIFontForCharacterSet(...)`：中文走 `CharacterSet.CJK`，
+  英文走 `Latin`（拉丁字库缺中文字形，反之亦然）。
+- 锚点取 `Panel_HUD.m_EquipItemPopup.m_ObjectDuration`（原版耐久条）的**世界坐标**，
+  换算到面板根的本地空间后加偏移。**只借坐标、不做父节点**：那根条所在的子树整套隐藏时
+  会把子物体一起停用，挂进去等于跟着一起消失。
+- 父节点固定 `Panel_HUD.transform`，跟着 HUD 一起显隐；`depth = 100` 压在常规 HUD 文字之上。
+- 数值：灯油 `KeroseneLampItem.GetPercentFuelRemaining()`（0~100），耐久 `GearItem.m_CurrentHP`（0~100），
+  两者都取整——文字只在整数变化时才重新赋值，避免每帧重建 NGUI 网格。
+
+驱动点在 `Panel_HUD.Update` 的 Postfix：面板实例直接递进来，不必走 `InterfaceManager.GetPanel<T>()`
+（面板未加载时会抛）；HUD 停用时 `Update` 本来就不跑，菜单 / 过场状态不用额外判断。
+场景切换时 `OnSceneChanged` 调 `HudReadout.Reset()`，因为 HUD 面板连同子物体一起被销毁。
+
 ## 6. 挂点
 
 蹲下补偿：挂点挂在玩家根节点（脚底）上，是固定高度，所以蹲下时提灯会悬在原来的腰位。
@@ -217,6 +248,9 @@ ModData 侧 `[ModData] Cache Saved (212)` 与 `Mods/ModData/sandbox3.moddata` �
 4. **`Time.timeScale > 0` 作为按键闸门**：假设开背包不暂停时间；若暂停，`L` 在背包里不响应，无副作用。
 5. **恢复不再依赖「窗口是否开着」**：意图快照在内存里，跨场景 / 读档任意时刻都能对上；
    30 秒只是「背包里一直找不到那盏灯」的放弃时限，超时才会清记录。
+6. **HUD 提示的落点仍是推算值**：`HudOffsetY = -70` 是「耐久条下方一点」的估计，分辨率与 UI 缩放不同
+   会偏；玩家用偏移滑条校准后应回填默认值。若日志里 `面板=False`（HUD 根上找不到 `UIPanel`），
+   标签不会被任何面板绘制，此时应改为挂到某个 `UIPanel` 子树下。
 
 ## 8. 排查方法
 
@@ -234,6 +268,8 @@ ModData 侧 `[ModData] Cache Saved (212)` 与 `Mods/ModData/sandbox3.moddata` �
    - `[存档] 清除记录（…）` → 谁把它清了，括号里就是原因
    - `Mods/ModData/<存档槽>.moddata` 是个 zip，条目 `LanternBelt` 里能直接读到
      `1|GEAR_KeroseneLamp_Spelunkers|97.166|0`（挂腰|物品名|燃油百分比|亮着）
+6. HUD 那一行不出现 / 位置不对：开详细日志看 `[挂腰] HUD 提示已建立：锚点=… 本地坐标=… 面板=True/False`。
+   面板为 `False` 说明没挂进任何 `UIPanel`；位置不对就调设置里的水平 / 垂直偏移再回填默认值。
 
 ## 9. 设计约束（改代码时别破坏）
 

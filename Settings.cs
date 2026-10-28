@@ -73,6 +73,27 @@ internal class Settings : JsonModSettings
 	[Description("每帧把提灯钉回挂点。关闭后只在挂腰瞬间摆一次位置，走动时灯会留在原地——除排查问题外不要关。")]
 	public bool FollowAnchor = true;
 
+	[Section("HUD 提示")]
+
+	[Name("显示灯油与耐久")]
+	[Description("提灯挂在腰上时，在 HUD 上显示灯油与耐久百分比（原版只在物品拿在手上时才显示耐久条）。关闭则什么都不显示。")]
+	public bool ShowHudReadout = true;
+
+	[Name("提示水平偏移")]
+	[Description("相对原版物品耐久条的位置左右移动，正值向右。觉得挡住视线就往边上挪。")]
+	[Slider(-400f, 400f)]
+	public float HudOffsetX = 0f;
+
+	[Name("提示垂直偏移")]
+	[Description("正值向上、负值向下。默认在耐久条下方一点。")]
+	[Slider(-400f, 400f)]
+	public float HudOffsetY = -70f;
+
+	[Name("提示字号")]
+	[Description("HUD 提示的字号。分辨率高觉得太小、或嫌它挡画面就调。")]
+	[Slider(10f, 40f)]
+	public float HudFontSize = 20f;
+
 	[Section("界面")]
 
 	[Name("提示语言")]

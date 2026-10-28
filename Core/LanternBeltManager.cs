@@ -529,6 +529,9 @@ internal static class LanternBeltManager
 	{
 		float now = Time.unscaledTime;
 
+		// HUD 面板会随场景重建，旧提示物体已经作废
+		HudReadout.Reset();
+
 		// 新的世界正在加载：这段时间里背包字段不可信，先别急着拆自己的台
 		s_sceneSettleUntil = now + SceneSettleSeconds;
 		s_invGoneSince = 0f;
