@@ -19,7 +19,7 @@
 | `LanternBeltMod.cs` | MelonMod 入口：注册设置、绑定日志、每帧驱动、`L` 键 |
 | `Settings.cs` | ModSettings 面板与落盘（`Mods/LanternBelt.json`） |
 | `Core/LanternBeltManager.cs` | 状态机 + 每帧校正 + 渲染/热量接管 + 挂点 + 读档恢复 |
-| `Core/HudReadout.cs` | 挂腰时的 HUD 提示（灯油 / 耐久），自建 `UILabel` 并锚在原版耐久条上 |
+| `Core/HudReadout.cs` | 挂腰时的 HUD 提示：克隆原版耐久条做油量条 + 自建 `UILabel` 显示百分比 |
 | `Patches/PlayerManager_EquipItem.cs` | 物品栏切换入口、丢弃前收起、原版开关灯同步 |
 | `Patches/ItemDescriptionPage_EquipButtonLabel.cs` | 装备按钮文案「悬挂/卸下」（恒定文案） |
 | `Patches/ItemDescriptionPage_Description.cs` | 悬挂时在物品介绍末尾追加「[已悬挂在腰带上]」 |
@@ -128,7 +128,7 @@
 | `Localization.Get` | Postfix | 只替换 `LANTERNBELT_*` 前缀的键 | 不引入本地化库、不污染游戏字符串表 |
 | `PlayerManager.Drop(GameObject,bool)` | Prefix | 挂腰的灯被丢弃 → 先 `Unhang(restoreActive:false, forget:true)` | 否则父节点还在玩家身上，落地物体会跟着人走；丢弃是玩家表态，意图一起清 |
 | `KeroseneLampItem.Toggle` | Postfix | 同步 `s_wantLit` | 玩家通过原版途径开关灯时，别让每帧校正把操作改回去 |
-| `Panel_HUD.Update` | Postfix | 挂着灯时刷新「灯油 / 耐久」那一行，否则隐藏 | 面板实例直接可拿（不必 `GetPanel<T>()`），HUD 停用时 `Update` 不跑，菜单状态天然不用判断 |
+| `Panel_HUD.Update` | Postfix | 挂着灯时刷新油量条与「灯油 / 耐久」文字，否则隐藏 | 面板实例直接可拿（不必 `GetPanel<T>()`），HUD 停用时 `Update` 不跑，菜单状态天然不用判断 |
 
 驱动：`MelonMod.OnUpdate` → `LanternBeltManager.Tick()`（每帧：挂着就 `Apply`，没挂就 `ReconcileIntent`）
 + `OnSceneWasLoaded` → 更新意图快照的镇定期并重写一次记录。
@@ -188,7 +188,7 @@ ModData 侧 `[ModData] Cache Saved (212)` 与 `Mods/ModData/sandbox3.moddata` �
 恢复时 `s_restoring = true`，`Apply` 会放宽背包校验——`FindLantern` 已经证明那盏灯在
 `Inventory.m_Items` 里，不需要再被自己的守卫拆一次。
 
-### HUD 提示：为什么必须自己画一行（1.6.0）
+### HUD 提示：为什么必须自己画（1.6.0 ~ 1.7.0）
 
 玩家要的「挂腰时看得见耐久 / 灯油」，原版没有现成出口：
 
@@ -215,6 +215,24 @@ ModData 侧 `[ModData] Cache Saved (212)` 与 `Mods/ModData/sandbox3.moddata` �
 驱动点在 `Panel_HUD.Update` 的 Postfix：面板实例直接递进来，不必走 `InterfaceManager.GetPanel<T>()`
 （面板未加载时会抛）；HUD 停用时 `Update` 本来就不跑，菜单 / 过场状态不用额外判断。
 场景切换时 `OnSceneChanged` 调 `HudReadout.Reset()`，因为 HUD 面板连同子物体一起被销毁。
+
+#### 油量条：克隆而不是照抄 sprite 名（1.7.0）
+
+1.6.0 只有一行文字，玩家仍要读数字才知道剩多少油，要求「跟原版那根白条一样」。做法是
+**`Object.Instantiate` 原版 `m_ObjectDuration`**，而不是读它的 `spriteName` 再拼一个 `UISprite`：
+
+- 克隆一次性继承 atlas、sprite、九宫格边框（`UISprite.type` 与 border）、`width`/`height`、
+  `pivot`、`color`、`depth` 相对关系。手拼任何一项猜错，条就会歪或变形，而克隆不会。
+- 克隆体里的 `UILabel`（原版百分比，量的是耐久）全部 `SetActive(false)`，否则会出现两个数字打架。
+- 所有 `UIWidget.depth` 统一 `+60`，只抬高不打乱背景 / 填充的先后。
+- 填充 sprite 靠 `m_SpriteFillDuration` 在模板里的**层级路径**对位（`Transform.Find`），
+  对不上再取 depth 最高的 sprite 兜底；找不到只警告一次，条保持静态，不重建。
+- 位置不做换算：克隆体 `localPosition = Vector3.zero`、保留自己的 pivot 与 scale，
+  于是「偏移填 0」就等于「长在原版耐久条待的地方」。条中心与尺寸用
+  `UIWidget.pivotOffset`（0~1 比例）配合 `width`/`height` 算，文字据此压在条下方正中。
+- 每帧只写 `fillAmount = fuel / 100`，且差值 > 0.002 才赋值——它会 `MarkAsChanged` 重建网格。
+- 模板可能比 HUD 本体晚就绪：`BarAlive()` 只看条本体，缺模板时按 3 秒间隔补建，
+  文字先立起来，不至于整块不显示。
 
 ## 6. 挂点
 
@@ -248,9 +266,11 @@ ModData 侧 `[ModData] Cache Saved (212)` 与 `Mods/ModData/sandbox3.moddata` �
 4. **`Time.timeScale > 0` 作为按键闸门**：假设开背包不暂停时间；若暂停，`L` 在背包里不响应，无副作用。
 5. **恢复不再依赖「窗口是否开着」**：意图快照在内存里，跨场景 / 读档任意时刻都能对上；
    30 秒只是「背包里一直找不到那盏灯」的放弃时限，超时才会清记录。
-6. **HUD 提示的落点仍是推算值**：`HudOffsetY = -70` 是「耐久条下方一点」的估计，分辨率与 UI 缩放不同
-   会偏；玩家用偏移滑条校准后应回填默认值。若日志里 `面板=False`（HUD 根上找不到 `UIPanel`），
-   标签不会被任何面板绘制，此时应改为挂到某个 `UIPanel` 子树下。
+6. **HUD 提示的落点从 1.7.0 起不再是估算值**：条是原版耐久条的克隆体、`localPosition` 归零，
+   所以 `HudOffsetY = 0` 就是「长在原版条的位置上」，换分辨率、换 UI 缩放都会跟着走。
+   只剩文字与条之间的间距是按字号算的（`max(4, fontSize * 0.55)`），字调得很大时需要看一眼。
+   若日志里 `面板=False`（HUD 根上找不到 `UIPanel`），标签不会被任何面板绘制，
+   此时应改为挂到某个 `UIPanel` 子树下。
 
 ## 8. 排查方法
 
@@ -268,8 +288,13 @@ ModData 侧 `[ModData] Cache Saved (212)` 与 `Mods/ModData/sandbox3.moddata` �
    - `[存档] 清除记录（…）` → 谁把它清了，括号里就是原因
    - `Mods/ModData/<存档槽>.moddata` 是个 zip，条目 `LanternBelt` 里能直接读到
      `1|GEAR_KeroseneLamp_Spelunkers|97.166|0`（挂腰|物品名|燃油百分比|亮着）
-6. HUD 那一行不出现 / 位置不对：开详细日志看 `[挂腰] HUD 提示已建立：锚点=… 本地坐标=… 面板=True/False`。
-   面板为 `False` 说明没挂进任何 `UIPanel`；位置不对就调设置里的水平 / 垂直偏移再回填默认值。
+6. HUD 提示不出现 / 位置不对：开详细日志看
+   `[挂腰] HUD 提示已建立：锚点=… 本地坐标=… 条=已建/缺模板 面板=True/False`。
+   - `面板=False` 说明没挂进任何 `UIPanel`，标签不会被绘制
+   - `条=缺模板` 说明 `EquipItemPopup.m_ObjectDuration` 还不可用，会按 3 秒间隔重试
+   - `[挂腰] 油量条已建立：模板=… 尺寸=WxH 填充=… sprite=…` 一次给全条的尺寸与精灵名，
+     `尺寸=0x0` 或 `填充=未找到` 就说明模板结构与预期不同
+   - `[挂腰] 油量条建好了但没认出填充 sprite` → 条会是静态的，把上一行一起发作者
 
 ## 9. 设计约束（改代码时别破坏）
 

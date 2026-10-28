@@ -10,7 +10,7 @@
     <AssemblyName>LanternBelt</AssemblyName>
     <RootNamespace>LanternBelt</RootNamespace>
     <!-- 指向实机安装；换机器只改这一行 -->
-    <TheLongDarkPath>F:\SteamLibrary\steamapps\common\TheLongDark</TheLongDarkPath>
+    <TheLongDarkPath>F:\GameAbouts\The Long Dark\TheLongDark_2.55</TheLongDarkPath>
     <ReleaseFolderPath>$(MSBuildProjectDirectory)\Release</ReleaseFolderPath>
   </PropertyGroup>
 

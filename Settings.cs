@@ -79,15 +79,19 @@ internal class Settings : JsonModSettings
 	[Description("提灯挂在腰上时，在 HUD 上显示灯油与耐久百分比（原版只在物品拿在手上时才显示耐久条）。关闭则什么都不显示。")]
 	public bool ShowHudReadout = true;
 
+	[Name("显示油量条")]
+	[Description("在百分比上方加一根条，长度就是剩余灯油。样式照抄原版手持物品的耐久条。关掉只留文字。")]
+	public bool ShowHudBar = true;
+
 	[Name("提示水平偏移")]
 	[Description("相对原版物品耐久条的位置左右移动，正值向右。觉得挡住视线就往边上挪。")]
 	[Slider(-400f, 400f)]
 	public float HudOffsetX = 0f;
 
 	[Name("提示垂直偏移")]
-	[Description("正值向上、负值向下。默认在耐久条下方一点。")]
+	[Description("正值向上、负值向下。默认 0 = 正好长在原版耐久条的位置上（挂腰时那条本来是空的）。旧版本这里默认是 -70，升级后建议调回 0。")]
 	[Slider(-400f, 400f)]
-	public float HudOffsetY = -70f;
+	public float HudOffsetY = 0f;
 
 	[Name("提示字号")]
 	[Description("HUD 提示的字号。分辨率高觉得太小、或嫌它挡画面就调。")]
