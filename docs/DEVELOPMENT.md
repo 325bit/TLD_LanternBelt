@@ -5,7 +5,10 @@
 ## 1. 一句话机制
 
 提灯挂腰 = **让提灯留在背包里，但把它的物体摆到玩家腰侧、打开渲染、保持 active，
-并把 `KeroseneLampItem.m_On` 与它的 `HeatSource` 一起钉在「开」**。
+并让 `KeroseneLampItem` 处于「已点燃」状态**——点燃走原版 `TurnOn(suppressStartAudio: true)` 拿状态
+（`m_On` / 热量 / 耐久判定），三段音效（悬挂 / 点火 / 燃烧）与点火闪灭由本 mod 按时间线自己排；
+点火音是随包带的 WAV（Wwise 塞不进外部音频），经 `Core/LampAudio.cs` 解包后用系统接口 `winmm!PlaySound` 播；
+第一人称手势由补丁逐处拦掉，热量则靠 `HeatSource.TurnOn()` 手动补登。
 
 原版没有任何「离手还在烧」的路径：`PlayerManager.EquipItem` 换手时会调 `KeroseneLampItem.TurnOff`。
 所以挂腰必须是「我们自己维持点燃状态」，而不是「借用原版某种收纳状态」。
@@ -14,13 +17,16 @@
 
 | 文件 | 职责 |
 |---|---|
-| `LanternBelt.csproj` | net6.0 + STBlade 2.55.0；`ModSettings.dll` 从实机 `Mods` 引用、`Private=false` |
+| `LanternBelt.csproj` | net6.0 + STBlade 2.55.0；`ModSettings.dll` 从实机 `Mods` 引用、`Private=false`；`Assets/ignite.wav` 以 `EmbeddedResource` 打进 dll |
 | `BuildInfo.cs` | 版本 / 作者 / loader 版本唯一来源（README、ChangeLog 必须与之一致） |
 | `LanternBeltMod.cs` | MelonMod 入口：注册设置、绑定日志、每帧驱动、`L` 键 |
 | `Settings.cs` | ModSettings 面板与落盘（`Mods/LanternBelt.json`） |
-| `Core/LanternBeltManager.cs` | 状态机 + 每帧校正 + 渲染/热量接管 + 挂点 + 读档恢复 |
+| `Core/LanternBeltManager.cs` | 状态机 + 每帧校正 + 渲染/热量接管 + 挂点 + 读档恢复 + 音效时间线 |
+| `Core/LampAudio.cs` | 自定义点火音：内嵌 WAV → 解包到 dll 旁 → `winmm!PlaySound` 直放（音量靠预缩放采样） |
 | `Core/HudReadout.cs` | 挂腰时的 HUD 提示：克隆原版耐久条做油量条 + 自建 `UILabel` 显示百分比 |
+| `Assets/ignite.wav` | 点火音本体（48kHz 立体声 PCM16，`2.61s`，已裁掉前导底噪）；换它就要重量闪灭时间线 |
 | `Patches/PlayerManager_EquipItem.cs` | 物品栏切换入口、丢弃前收起、原版开关灯同步 |
+| `Patches/PlayerAnimation_IgniteConfirm.cs` | 三处第一人称手势拦截；`UpdateEffects` 的 Postfix 同时推进点火闪灭 |
 | `Patches/ItemDescriptionPage_EquipButtonLabel.cs` | 装备按钮文案「悬挂/卸下」（恒定文案） |
 | `Patches/ItemDescriptionPage_Description.cs` | 悬挂时在物品介绍末尾追加「[已悬挂在腰带上]」 |
 | `Patches/Localization_Get.cs` | 运行时翻译本 mod 的 `LANTERNBELT_*` 键 |
@@ -72,6 +78,7 @@
 | 离手不能调 `Toggle()` | `KeroseneLampItem.Toggle` 先过 `PlayerAnimation.FirstPersonHandsEnabled` + `IsCancelableActionInProgress` |
 | 背包物品不渲染 | `GearItem.m_IsHidden` + `m_MeshRenderers` / `m_SkinnedMeshRenderers`；只把 GameObject 激活会得到「有光没灯」 |
 | 装备按钮文案可改 | `ItemDescriptionPage.GetEquipButtonLocalizationId(GearItem)` 是 `public static`，返回本地化键，再由 `Localization.Get(string)` 翻译 |
+| 音效只能借原版 | `TurnOn` / `TurnOffDelayed` / `TurnOff` 内部各自 `GameAudioManager.PlaySound(m_*Event, gameObject)`；自己摆字段绕过它们 = 一点声音都没有（1.8.0 的起因） |
 
 关键成员（编译面已核对，命名空间按 Il2CppInterop 扁平化规则）：
 
@@ -81,38 +88,208 @@
 | 装备 / 卸下 | `PlayerManager.EquipItem(GearItem,bool)`、`UnequipItemInHands()` |
 | 检视中判定 | `PlayerManager.GearItemBeingInspected()` |
 | 提灯组件 | `GearItem.m_KeroseneLampItem` |
-| 开关灯 | `KeroseneLampItem.IsOn()`、`TurnOn(bool)`、`TurnOff(bool)`、`GetPercentFuelRemaining()` |
+| 开关灯 | `KeroseneLampItem.IsOn()`、`TurnOn(bool)`、`TurnOff(bool)`、`TurnOffDelayed()`、`HideEffects(bool)`、`StopLoopingAudio()`、`GetPercentFuelRemaining()` |
 | 热量 | `HeatSource.TurnOn()`、`IsTurnedOn()`、`TurnOffImmediate()`；`HeatSourceManager.m_HeatSources`、`AddHeatSource()`；入口 `GameManager.GetHeatSourceManagerComponent()` |
 | 可见性 | `GearItem.m_IsHidden`、`m_MeshRenderers`；`GameObject.layer` |
 | 背包 | `GameManager.GetInventoryComponent().m_Items` |
 | 玩家 / 相机 | `GameManager.GetPlayerTransform()`、`GetVpFPSCamera()` |
 | 手部状态 | `PlayerAnimation.FirstPersonHandsEnabled(GearItem)`（实例方法，经 `GameManager.GetPlayerAnimationComponent()` 取） |
 
-### 为什么必须绕开原版 `TurnOn`（按 L 卡手的唯一根因）
+### 第一人称手势：三处，必须逐处挡（按 L 卡手的根因）
 
-原版有**两处**会触发第一人称点燃手势，两处都得处理：
+挂在腰上时手上没有灯，第一人称动画没有可绑定的模型，`PlayerAnimation` 的状态机就停在
+「正在点燃 / 熄灭中」：**不能装备枪械 / 石块 / 木炭，也不能与物品互动**。
 
-| # | 位置 | 触发条件 |
+| # | 调用点 | 方法 | 挡法 |
+|---|---|---|---|
+| 1 | `KeroseneLampItem.TurnOn` 收尾（`0x120BCB3`） | `Trigger_Generic_Ignite(bool)` | 返回假即可（调用方不看返回值） |
+| 2 | `KeroseneLampItem.UpdateEffects` 第一段（`0x120CE3F`） | `Trigger_Generic_Ignite_Confirm(...)` | 返回假即可（同上） |
+| 3 | `KeroseneLampItem.TurnOffDelayed` 开头（`0x120C09A`） | `Trigger_Generic_Extinguish(cb)` | **必须返回真** |
+
+第 3 处和前两处不一样：调用方写的是
+
+```csharp
+if (!PlayerAnimation.Trigger_Generic_Extinguish(cb)) { Debug.LogError(...); return; }
+```
+
+返回假就整段退出，连熄灭起始音都不会播、`m_TurningOff` 也不会置位。所以补丁跳过原方法、
+把 `__result` 写成 `true`，等于「假装手势已经开始」。
+
+触发条件都是 `PlayerAnimation.FirstPersonHandsEnabled(m_GearItem)` 为真——**空手时为真**，
+所以挂腰时这三处全都会命中，不能指望「手上没东西就不会触发动效」。
+
+**1.2.0 只挡了第 2 处**，而按 `L` 点亮走的是 `TurnOn` → 第 1 处，所以卡手照旧。
+
+判定只认「挂腰的那一盏」：`TurnOn` / `UpdateEffects` / `TurnOffDelayed` 各挂一个 Prefix/Postfix
+记录 `Current`，手势补丁里用 `IsHungLampComponent(Current)` 比指针。玩家点篝火、点火把不受影响。
+
+### 音效与闪灭：三段声，各管各的（1.9.0 / 1.10.0）
+
+版本演进有三步，前两步别退回去：
+
+1. **≤1.7.5** 是 `TurnOnSafely`：直接摆 `m_On = true` / `m_TurnOnComplete = true` / `m_TurningOff = false` /
+   `m_TurnOnEffectsTimer = 0`，再 `m_FXGameObject.SetActive(true)`。能点亮，但整段点火流程被跳过——
+   没火花、没点火音、没循环音、没「延时点亮」那一下闪，连 `GearItem.CheckForBreakOnUse()` 都省了。
+2. **1.8.0** 改回调原版 `TurnOn(false)`。音有了，但原版那一句是**两个事件同一帧**：
+   `m_TurnOnEvent`（点火音）+ `m_LoopWithDelayEvent`（燃烧循环）一起播，听上去是一声混响；
+   而「拿出提灯」的金属声因为装备流程被 `EquipItem` 拦掉，压根没响过。
+3. **1.9.0** 把三段声拆开各归各的动作，但点火音仍是原版那个 `0.135s` 的短促擦火，
+   与「呲—呲—点燃」的听感差得远。
+
+1.10.0 的分法——三段声各归各的动作：
+
+| 动作 | 用什么 | 时机 |
 |---|---|---|
-| 1 | `KeroseneLampItem.TurnOn` 收尾（RVA `0x120BCB3`） | `PlayerAnimation.FirstPersonHandsEnabled(m_GearItem)` 为真 |
-| 2 | `KeroseneLampItem.UpdateEffects` 第一段（RVA `0x120CE3F`） | `!m_TurnOnComplete` 且手部启用 |
+| 悬挂 | `gi.m_GearItemData.m_PickupAudio`（原版「拿出」） | 点按钮那一帧 |
+| 点火 | **本 mod 自带音频**（`Assets/ignite.wav`，`2.61s`） | 悬挂声之后 `0.45s`（`GearAudioLeadSeconds`） |
+| 燃烧 | `lamp.m_LoopWithDelayEvent` | 点火音快放完的 `2.50s`（`FlickerLoopAt`） |
+| 收起 | `gi.m_GearItemData.m_StowAudio`（原版「收回」） | 收起后 `0.35s`（`StowAudioDelaySeconds`），排在熄灭音之后 |
 
-两处调的是不同方法：第 1 处是 `Trigger_Generic_Ignite`，第 2 处是 `Trigger_Generic_Ignite_Confirm`。
-**1.2.0 只挡了第 2 处**，而按 `L` 点亮走的是 `TurnOn` → 第 1 处，所以卡手照旧——这也是那一版
-看起来"修了却没效果"的原因。
+`IgniteLamp` 因此改传 `TurnOn(suppressStartAudio: true)`：原版只摆 `m_On`、热量、耐久判定，
+不播那两个事件、不点火花、也不触发第一人称手势（少一处要挡的），音效由本 mod 按上表自己排。
+那条分支会顺手起 `m_LoopEvent`（`0x58`）的循环音，所以紧接着 `StopLoopingAudio()`。
+自己播的 id 要写回 `m_TurnOnAudioID` / `m_LoopAudioID`，否则 `TurnOff` 停不掉，关灯后火还在响。
 
-这个手势要求提灯位于第一人称手部槽位。挂在腰上时手上没有灯，动画没有可绑定的模型，
-`PlayerAnimation` 的状态机就停在「正在点燃」：**不能装备枪械 / 石块 / 木炭，也不能与物品互动**。
+### 自定义点火音：为什么绕开 Wwise（1.10.0 起，播放通路 1.10.3 定）
 
-修法（1.3.0 起）：
+Wwise 的事件是编译进 `.bnk` 的 id，运行时塞不进外部音频；想换音色只有两条路：
+改 bank（不可行），或者干脆不走 Wwise。`Core/LampAudio.cs` 走后者，最终用的是**系统接口**：
 
-1. **主路径不再调用 `TurnOn`**，改为 `TurnOnSafely` 直接摆字段：
-   `m_On = true`、`m_TurnOnComplete = true`、`m_TurningOff = false`、`m_TurnOnEffectsTimer = 0`，
-   再 `m_FXGameObject.SetActive(true)`。`Update` 每帧会跑 `UpdateEffects` 与 `ReduceFuel`，
-   光照、烧油、热量全部照旧，只是不碰手部动画。顺带也躲开了 `TurnOn` 里的
-   `GearItem.CheckForBreakOnUse()`（每次点灯都掷一次损坏判定）。
-2. **兜底**：`TurnOn` 与 `UpdateEffects` 各挂一个 Prefix/Postfix 记录「当前是哪盏灯」，
-   两处手势 Prefix 只在调用者是挂腰那盏灯时返回 false。玩家点篝火、点火把的手势不受影响。
+- 音频以 **PCM16 WAV** 嵌在程序集里（`<EmbeddedResource Include="Assets/ignite.wav" />`）。
+- 运行时解包到 dll 旁边的 `LanternBelt_ignite.wav`，再用
+  `winmm!PlaySound(path, 0, SND_FILENAME | SND_ASYNC | SND_NODEFAULT)` 直放。
+  WAV 由 Windows 解码，与游戏的 Wwise 混音互不干扰；停止用 `SND_PURGE`。
+- 系统接口没有音量参数：**音量靠预缩放采样**——按当前音量另存一份 `*_v.wav` 再播，
+  同一音量只生成一次。所以设置里的「点火声音量」照常有效。
+- **Unity 的两条路在 2.55 上都断了，别再试**：
+  - `AudioClip.Create` + `SetData` 拿到的是 length / frequency / channels 全 `0` 的空壳，
+    `PlayOneShot` 静默失败、连异常都不抛（1.10.0，日志 `已载入 0.00s 0Hz 0ch`）；
+  - `UnityWebRequestMultimedia.GetAudioClip` 内部要 `new DownloadHandlerAudioClip(...)`，
+    而这个构造函数在 il2cpp 桩里被剥离，运行时报
+    `Method not found: Void DownloadHandlerAudioClip..ctor(String, AudioType)`（1.10.1）。
+  两条路都是**静默退回原版**，于是听到的是原版那声 `Play_LanternLight`，闪灭却按 2.6 秒走。
+- 拿不到音频（资源缺失 / 系统接口拒绝）时 `Play` 返回假，`PlayIgniteAudio` 退回原版
+  `m_TurnOnEvent`——音色不对但至少有声音，灯与闪灭时间线不受影响。
+- 日志判据：`[挂腰] 自定义点火音已就绪 2.61s 48000Hz 2ch（系统播放）`。
+  出现 `自定义点火音不可用，退回原版音效：…` 就是没走通，后面那行 `音效 点火(原版)` 会说明它退了。
+
+音频三个瞬态是闪灭时间线的依据（`ffmpeg` 抽 1ms 峰值量的）。**量之前先把前导底噪裁掉**，
+否则「播放起点」不等于「第一声开口」，闪灭会整体提前——这正是 1.10.1 的毛病：
+原文件 0~`0.040` 秒只是一层底噪，第一下打火石在 `0.074` 秒，而闪灭从按下开灯键就开始计时，
+于是光比声早约 `40` 毫秒，听得出来。现在 `Assets/ignite.wav` 已从 `0.038` 秒处裁过，
+三个尖峰相对新起点是：
+
+| 时刻 | 现象 | 对应闪灭 |
+|---|---|---|
+| `0.036s` | 第一下打火石，峰值 `14612` | 此刻是亮的（`0 ~ 0.09`） |
+| `0.09s` | 第一声余韵散尽 | 灭着等第二声 |
+| `0.618s` | 第二下，峰值 `10964` | 再亮一下（`0.61 ~ 0.70`） |
+| `1.642s` | 低频火声涌起，过零率掉到 `0.01` | 转长亮、`HideEffects(false)` |
+| `2.607s` | 音频结束 | `2.45` 起循环音接上，交叠一小段 |
+
+换音频文件就得重新量这三个点，改 `FlickerFirstOff` / `FlickerSecondOn` / `FlickerSecondOff` /
+`FlickerFinalOn` / `FlickerLoopAt` / `FlickerDurationSeconds`；否则闪光会和声音错位。
+裁过的音频交给 `EnsureFile` 解包到 `Mods/`，它按时间戳判断新旧：文件比 dll 旧就当作
+上一版的缓存覆盖掉，比 dll 新（玩家自己换的）则保留。
+
+### 闪灭：短亮 — 短亮 — 长亮
+
+`UpdateEffects` 每帧做三件事：`timer += deltaTime`；`if (timer <= m_TurnOnEffectsDelay) return;`；
+然后按 `Weather.UseOutdoorLightingForLightSources()` 开关 `m_LightOutdoor` / `m_LightIndoor` /
+`m_LightIndoorCore` 的 `enabled`。闪灭就靠两点：
+
+- **冻住它的计时器**：闪灭期间每帧写 `m_TurnOnEffectsTimer = -4f`（`FlickerTimerFreeze`）。
+  负值让它永远落在 `timer <= delay` 那一支里，直接早退，光源就不会被它重写。
+  **不能只写 `-1`**：它每帧 `+= deltaTime`，整段两秒半下来 `-1` 会被加过门槛、原版抢先点灯；
+  `-4` 才有余量。也不能置 `0`，那样一帧就越过了。
+- **抢在它后面写**：光源写在 `KeroseneLampItem.UpdateEffects` 的 **Postfix** 里。
+  `MelonMod.OnUpdate` 与 MonoBehaviour 的 `Update` 之间没有顺序保证，只有 Postfix 一定在原版之后。
+
+明暗表是常量（`FlickerFirstOff` / `FlickerSecondOn` / `FlickerSecondOff` / `FlickerFinalOn`）：
+`0 ~ 0.09` 亮、`0.09 ~ 0.61` 灭、`0.61 ~ 0.70` 亮、`0.70 ~ 1.64` 灭、`1.64` 起常亮（长亮）。
+**时间表的每一项都是「相对第一声开口」**，因为音频已经裁过前导底噪，`t = 0` 就是第一下打火石，
+所以 `FlickerLit` 里没有「先灭一会儿」的分支。`1.64` 才 `HideEffects(false)`，`2.45` 接上燃烧循环，
+`2.61` 收尾：计时器推成 `delay + 0.01`，下一帧原版重新接管光源（按天气选室内 / 室外，别自己瞎开三盏）。
+
+`SetLampVisual` 同时改 `m_FXGameObject` 与三盏 `Light`：火焰对象与光照一起明灭才像擦火；
+只改 `Light.enabled` 的话，若光源挂在特效对象下面，父物体一关就白写。
+
+闪灭中途按 `L` 关灯：`ExtinguishLamp` 先 `EndFlicker`，否则它每帧都在抢光源；
+灯自己的 `Update` 没在跑时（被停用 / 销毁）由 `Tick` 里 `FlickerDurationSeconds + 1f` 的超时兜底收尾。
+
+### 熄灭：两级流程，自己收尾
+
+`TurnOffDelayed()` 只做一半——播**熄灭起始音**（`m_ExtinguishStartEvent`）、置
+`m_TurningOff = true`、`m_TurnOffTimer = 0`；真正的 `TurnOff(playAudio: true)` 本该由灯自己的
+`Update` 在 `m_TurnOffDelay` 秒后调用，那时才播第二声（`m_TurnOffEvent`）并停掉循环音、
+关热量、关火焰特效。
+
+**但挂腰时那段计时永远不会跑（1.10.3 查明）**。`KeroseneLampItem.Update`（RVA `0x120B3E0`）里
+熄灭分支的头两句是：
+
+```
+call  PlayerAnimation.FirstPersonHandsEnabled(m_GearItem)
+test  al, al
+jne   skip                      ; ← 为真就跳过整段熄灭计时
+```
+
+挂腰时双手是空的，`FirstPersonHandsEnabled` 恒为真，永远走 `skip`。所以 `m_TurnOffDelay`
+设成多少都没用，灯只能等 `ExtinguishWatchdogSeconds`（5 秒）兜底才灭——玩家看到的就是
+「按完关灯，灯还亮五秒」。
+
+**现在由本 mod 自己收尾**：`ExtinguishLamp` 在 `TurnOffDelayed()` 之后记下
+`s_turnOffAt = now + delay`，`Tick` 里的 `PumpPendingTurnOff()` 到点调 `TurnOff(true)`
+（真关灯 + 播第二声）。`m_TurnOffDelay` 照样写上，万一原版条件变了它也能自己走完。
+`CancelExtinguish` 与 `ClearState` 都要清 `s_turnOffAt`，否则撤销之后下一帧又被灭掉。
+
+**延迟取设置值，默认 `2.8s`**（`DefaultTurnOffDelaySeconds`）。2.55 的 prefab 原本是 `3.67s`，
+而熄灭起始音自己不到 `0.1s` 就落下——对照实机录像：`0.525s` 一声短促爆发，画面亮度一直是
+`64.3`，直到 `4.20s` 才一步掉到 `31.8`。`m_TurnOffDelay` 是共享字段，所以 `Hang` 时记进
+`s_origTurnOffDelay`、`Unhang` 时还回去，不把手持提灯的观感一起改掉。
+
+状态机里 `!s_wantLit && IsOn()` 时**只调一次** `TurnOffDelayed`，之后靠 `m_TurningOff`
+跳过；每帧校正不会重复触发。三个坑：
+
+- **熄灭途中灯仍是亮的**（`IsOn()` 还是真）。这时不要把 `s_wantLit` 当成已被执行，
+  也不要立刻 `SetHeat(false)`——热量由原版在 `TurnOff` 里关。
+- **`PumpPendingTurnOff` 到点后 `m_TurningOff` 已被别处清掉**（比如连按两下触发
+  `CancelExtinguish`），那就什么都不做，灯保持亮着。5 秒兜底只在 `Tick` 长时间不跑时才会命中，
+  日志出现 `[挂腰] 熄灭超时，直接关灯` 说明正常路径没走通，先查 `s_turnOffAt` 是不是被清了。
+- **熄灭途中又按开灯键**：`TurnOn` 开头就 `if (m_On) return;`，直接再调是空的。要先把
+  `m_TurningOff` / `m_TurnOffTimer` 清掉（`CancelExtinguish`），灯就保持亮着了。
+
+### 音效字段（2.55 偏移）
+
+`KeroseneLampItem`（`TLD.Gear`）：
+
+| 偏移 | 字段 | 用途 |
+|---|---|---|
+| `0x30` | `m_TurnOnEffectsDelay` | 点火后多久把光源点亮 |
+| `0x34` | `m_TurnOffDelay` | 熄灭起始音到真正关灯的间隔 |
+| `0x38` | `m_TurnOnEvent` | 点火音 |
+| `0x40` | `m_ExtinguishStartEvent` | 熄灭第一声 |
+| `0x48` | `m_TurnOffEvent` | 熄灭第二声 |
+| `0x50` | `m_LoopWithDelayEvent` | 点火后延迟进入的燃烧循环音 |
+| `0x58` | `m_LoopEvent` | `suppressStartAudio = true` 时直接起的循环音 |
+| `0x98` / `0x9C` / `0xA0` | `m_TurnOnAudioID` / `m_ExtinguishStartAudioID` / `m_LoopAudioID` | `GameAudioManager.PlaySound` 返回的播放 id，`TurnOff` 用 `StopPlayingID(..., 100)` 掐掉 |
+| `0xA4` / `0xA5` / `0xCC` | `m_On` / `m_TurnOnComplete` / `m_TurningOff` | 状态位 |
+| `0xA8` / `0xB0` / `0xB8` / `0xC0` | `m_FXGameObject` / `m_LightIndoor` / `m_LightIndoorCore` / `m_LightOutdoor` | 火焰对象与三盏光源（`UnityEngine.Light`），闪灭就改这四个 |
+
+`GearItemData`（`GearItem.m_GearItemData`，`0x348`）：
+
+| 偏移 | 字段 | 用途 |
+|---|---|---|
+| `0xB8` | `m_PickupAudio` | 「拿出」装备的金属声，`PlayerManager` 的捡起路径用它 |
+| `0xC0` | `m_StowAudio` | 「收回」装备的金属声，`PlayStowAudio()` 用它 |
+| `0xC8` | `m_PutBackAudio` | 放回容器 / 背包的声（本 mod 未用） |
+
+播放 API：`GameAudioManager.PlaySound(AK.Wwise.Event, GameObject)` 返回 `uint`。
+灯的四个事件用 `lamp.gameObject` 当声源（`Update` 每帧 `SetAudioSourceTransform` 跟住它，
+所以挂腰时声音从腰上那盏灯发出）；装备音用 `InterfaceManager.GetSoundEmitter()`——
+收起时灯已被隐藏，挂在它身上的声源不会再发声。
+
+> 命名空间注意：Wwise 类型在互操作程序集 `Il2CppAK.Wwise.Unity.API.WwiseTypes.dll` 里，
+> 命名空间是 **`Il2CppAK.Wwise`**（不是 dump 里的 `AK.Wwise`），写 `AK.Wwise.Event` 编译不过。
 
 ## 5. 注入点
 
@@ -121,7 +298,7 @@
 | `PlayerManager.EquipItem` | Prefix（返回 false 吞掉原版） | 提灯 → `ToggleHolster`；其它物品放行 | 所有「装备」路径的汇合点（面板按钮 / 快速装备 / 拾取自动装备），与 HuntingRoads 挂瞄准镜同法 |
 | `ItemDescriptionPage.GetEquipButtonLocalizationId` | Postfix | 提灯 → 返回 `LANTERNBELT_Mount` | 不改控件只改文案，手柄提示与原版事件链全部保留 |
 | `ItemDescriptionPage.BuildItemDescription` | Postfix | 悬挂时 `__result += "\n" + Get("LANTERNBELT_Mounted")` | 与 HuntingRoads 给装镜的枪加描述行完全同法，不碰 UI 控件 |
-| `KeroseneLampItem.UpdateEffects` | Prefix / Postfix | 记下「正在更新特效的是哪盏灯」 | 只用于给下一行提供判定依据 |
+| `KeroseneLampItem.UpdateEffects` | Prefix / Postfix | Prefix 记下「正在更新特效的是哪盏灯」；Postfix 推进点火闪灭（写光源必须在原版之后） | Prefix 给手势判据，Postfix 是唯一能稳定压过原版光源写入的位置 |
 | `KeroseneLampItem.TurnOn` | Prefix / Postfix | 记下「正在点亮的是哪盏灯」 | 给下面两行提供判定依据 |
 | `PlayerAnimation.Trigger_Generic_Ignite` | Prefix（返回 false） | 发起者是挂腰灯 → 吞掉 | `TurnOn` 收尾那次，按 L 卡手就是它 |
 | `PlayerAnimation.Trigger_Generic_Ignite_Confirm` | Prefix（返回 false） | 发起者是挂腰灯 → 吞掉 | `UpdateEffects` 里那次，兜底 |
@@ -396,7 +573,33 @@ s_label.transform.localPosition = new Vector3(0, y, 0); // 于是这句就是写
    - `[存档] 清除记录（…）` → 谁把它清了，括号里就是原因
    - `Mods/ModData/<存档槽>.moddata` 是个 zip，条目 `LanternBelt` 里能直接读到
      `1|GEAR_KeroseneLamp_Spelunkers|97.166|0`（挂腰|物品名|燃油百分比|亮着）
-6. HUD 提示不出现 / 位置不对：开详细日志看
+6. 音效 / 闪灭不对：开详细日志，按顺序看这几种行
+   - `[挂腰] 音效 悬挂 id=… 事件=…` → 悬挂声；`id=0` 说明 `GearItemData.m_PickupAudio` 是空
+   - `[挂腰] 自定义点火音已载入 2.61s 48000Hz 2ch 就绪=True` → 内嵌音频正常解开了
+   - `[挂腰] 点火 闪灭=开 音效=开 时间线 亮到0.09/再亮0.61/长亮1.64s 循环音 2.45s 共 2.61s` → 时间线起点
+   - `[挂腰] 音效 点火 自定义 2.61s 音量=1.00` → 播的是自带音频；
+     变成 `[挂腰] 音效 点火(原版) id=…` 说明音频没载入、退回原版事件了
+   - `[挂腰] 音效 燃烧循环 …` → `2.50s` 才有一行，早于这个时刻说明走的是别的分支
+   - `[挂腰] 熄灭起始（0.20s 后关灯）` → 关灯第一级，括号里是实际生效的延迟
+   - `[挂腰] 音效 收起 …` → 收起的金属声
+   - 事件名（`事件=Play_…`）能直接告诉你哪个字段对上了哪个音；`<空>` 是字段没填，
+     `<未知>` 表示 `Event.Name` 读不出来（不影响播放，只能听）
+   - 音效=静 → 设置里「开关灯音效」被关了，或走的是读档恢复路径（那条路本来就静音）
+   - 没看到「自定义点火音已载入」而出现「没找到内嵌的点火音资源」→ csproj 的
+     `EmbeddedResource` 掉了，重新编译一遍；资源名必须是 `LanternBelt.Assets.ignite.wav`
+   - 「音频载入失败：…」/「Unity 没有解出可播放的音频」→ 解包出的 WAV 有问题：
+     删掉 dll 旁的 `LanternBelt_ignite.wav` 让它重解包；自己换文件时必须是 PCM16 WAV
+   - 「自定义点火音已载入 0.00s 0Hz 0ch」→ 历史问题（1.10.0 用 `AudioClip.Create` 造出的空壳），
+     1.10.1 起不会再出现；真出现说明又走回了动态造 clip 的老路
+   - 「系统播放接口拒绝了这个 WAV」→ 系统不让放这个文件（路径 / 格式）；换回自带的 WAV 再试
+   - 「生成音量副本失败」→ dll 所在目录不可写，把音量调回 1.0 可绕过（1.0 直接播原件）
+   - 亮度不对（声音和闪光错位）→ 换过 `Assets/ignite.wav` 却没重量时间线，见 §4「自定义点火音」
+   - 出现「原版点火失败，改为直接点亮」：`TurnOn` 抛异常了，灯会亮但没有声音，
+     这时要看异常文本（多半是某个字段/方法在 2.55 上对不上）
+   - 关灯后灯一直亮：`[挂腰] 熄灭超时，直接关灯` 会兜底，出现它就说明灯的 `Update` 没在跑
+   - 只有光在闪、火焰不亮：`m_FXGameObject` 与 `m_LightIndoor` 不是同一层级——
+     闪灭同时改这两处，缺一个就会出现「有光没火」或「有火没光」
+7. HUD 提示不出现 / 位置不对：开详细日志看
    `[挂腰] HUD 提示已建立：锚点=(x, y, z) 条=已建/缺模板 面板=True/False`。
    - 锚点是容器（整块中心）的位置，正常应是右下角方向的正 x、负 y（如 `(810, -430, 0)`）；
      `x` 恒为 0 或与边距无关，说明另有代码在写同一个 `Transform`（见 §6 第 7 条）；
@@ -411,12 +614,92 @@ s_label.transform.localPosition = new Vector3(0, y, 0); // 于是这句就是写
 
 ## 9. 设计约束（改代码时别破坏）
 
-- 不修改物品定义、燃油速率、光照强度——所有数值都走原版。
-- 不写游戏存档字段：挂腰状态存在 ModData 自己的 `Mods/ModData/<存档槽>.moddata` 里，
-  卸载 mod 后游戏存档依然干净。
-- **别让内部路径清掉意图快照**：`Unhang` 的 `forget` 只有玩家显式操作（卸下 / 丢弃 / 进容器）才为 `true`。
-  场景切换、物体销毁、加载中途的背包字段抖动一律保留，否则跨场景必然丢状态。
-- 挂腰期间必须压制提灯自身物理（关碰撞 + 刚体设为运动学），否则每帧定位会和质量/重力打架。
-- 悬挂状态只能由物品栏点击切换；`L` 只负责亮 / 灭，不能反过来兼职挂腰。
-- 挂腰期间不得拦截其它物品的装备动作——手必须是真的空。
-- 所有跨 il2cpp 边界的调用都要 `try/catch`，异常只降级不抛出。
+| 约束 | 违反会怎样 |
+|---|---|
+| 不修改物品定义、燃油速率、光照强度——所有数值都走原版 | 与存档里的既有提灯对不上，玩家换 mod 后手感突变 |
+| 不写游戏存档字段，挂腰状态只存进 `Mods/ModData/<存档槽>.moddata` | 卸载 mod 后游戏存档会残留脏字段 |
+| **内部路径不得清掉意图快照**：`Unhang` 的 `forget` 只有玩家显式操作（卸下 / 丢弃 / 进容器）才为 `true` | 场景切换、物体销毁、加载中途的背包字段抖动都会把记录擦掉，跨场景必然丢状态 |
+| 挂腰期间必须压制提灯自身物理（关碰撞 + 刚体设为运动学） | 每帧定位会和质量 / 重力打架，灯在腰上抖 |
+| 悬挂状态只能由物品栏点击切换；`L` 只负责亮 / 灭 | 两条入口各写一半状态，`s_wantLit` 会与实际相反 |
+| 挂腰期间不得拦截其它物品的装备动作 | 手必须是真空闲，否则玩法被 mod 削掉一半 |
+| **自己播的音效 id 必须写回** `m_TurnOnAudioID` / `m_LoopAudioID` | 原版 `TurnOff` 只停这两个 id，漏写就是「灯灭了火还在响」 |
+| **闪灭只能写光源，不要碰 `m_TurnOnEffectsDelay`** | 那是原版自己的节拍，改它会让手持提灯也跟着变 |
+| **闪灭期间计时器必须冻在 `-4`**（不是 `-1`、更不是 `0`） | 原版每帧 `+= deltaTime`，冻得不够深会被加过门槛、它抢先点灯，闪灭就只亮不闪 |
+| **`m_TurnOffDelay` 改完要还回去**（`Hang` 记、`Unhang` 还原） | 它挂在共享的 prefab 数据上，不还原就把「按一下就没」的手感带到手持状态 |
+| **换 `Assets/ignite.wav` 必须重量闪灭时间线** | 四个时刻对应音频里的三个瞬态，只换音频不改常量，闪光就会比声音早或晚 |
+| **`s_turnOffAt` 必须与熄灭流程同生共死**（`CancelExtinguish` / `ClearState` 都要清） | 撤销之后下一帧又被灭掉，玩家看到「关灯点不动」 |
+| 所有跨 il2cpp 边界的调用都要 `try/catch`，异常只降级不抛出 | 一处空引用会连带打断同帧后面的挂腰校正与 HUD 刷新 |
+
+## 10. 注释迁移对照表
+
+源码注释只留「做什么 / 为什么（一句）/ 违反会怎样」，过程叙事一律下沉到本文。下表是已经搬过的块，
+再想往注释里补叙事时先在这里对一下该写去哪。
+
+| 原位置 | 迁移到 | 注释里保留 |
+|---|---|---|
+| `Core/LanternBeltManager.cs` 类头（四条机制清单） | §4 机制依据表 | 一行点名四条原版行为 + 指向 §4 |
+| `Core/LanternBeltManager.cs` `ExtinguishLamp` 内（prefab 延迟 `3.67s` 的实测） | §4「熄灭：两级流程，自己收尾」 | 「prefab 里填到近四秒」一句 |
+| `Patches/PlayerAnimation_IgniteConfirm.cs` 类头（三处手势的 IL 与双手锁死症状） | §4「第一人称手势：三处，必须逐处挡」 | 三处的方法名 + 第三处必须改写返回值 |
+| `Core/SaveLedger.cs` 类头（早期反推方案的失效日志） | §5「跨场景 / 读档恢复」 | 记录格式 + 燃油是 0~100 百分比 |
+| `Core/HudReadout.cs` 类头（`EquipItemPopup` 的取数分支清单） | §5「HUD 提示：为什么必须自己画」 | 原版没有提灯分支 + 三层层级 + 容器不能带 `UIWidget` |
+| `Core/HudReadout.cs` `ApplyLayout`（为什么逐值比较才写） | §5「尺寸与设置热更新」 | 「写这几个属性会重建 NGUI 网格」+ 三条顺序 |
+| `Core/HudReadout.cs` `ApplyBarSize`（基线绝对映射的推导） | §5「尺寸与设置热更新」 | 「按目标 / 基线独立换算，不累积误差」 |
+| `Core/HudReadout.cs` `CornerLocal`（`UIRoot` 没有 `activeWidth`） | §5「定位：不要用原版控件当锚点」 | 主路径是相机投影，兜底要自己按宽高比算 |
+| `Core/LampAudio.cs` 类头（两条 Unity 音频路的静默失败） | §4「自定义点火音：为什么绕开 Wwise」 | 「Unity 两路在 2.55 上不通，别再试」一句 |
+
+反向规则：注释里**不写**版本号、RVA、裸日志行、排查过程、字段偏移——这些只有本文该有。
+写完跑一遍 `check_docs.py`，它会把违反项的 `文件:行号` 直接列出来。
+
+## 11. 维护约定
+
+- **版本号只有一个来源**：`BuildInfo.cs` 的 `Version`。改完必须同步 `README.md` 徽章、
+  `ChangeLog.md` 新增条目、`LanternBelt.csproj`；三处对不上就算没发版。
+- **`README.md` 面向玩家**：不写字段名、不写类名、不写 Harmony / RVA。`docs/` 与源码注释面向维护者。
+  修订 README 走 `tld-mod-readme` skill 的骨架（功能 → 前置 → 安装 → 使用 → 设置表 → 按症状调参 → 卸载 → 许可），
+  写完跑 `check_readme.py`。
+- **注释与本文按 `tld-mod-docs` 的四层归属落位**：一句结论进注释，叙事进本文，单点故障另开
+  `docs/BUG-<症状>.md`（一处坑一篇，含复现条件与判据），版本演进进 `ChangeLog.md`。本文只留「现在为什么这样」。
+- **改动触发复核的清单**（任一条命中就回去读对应节）：
+  | 改动 | 必须复核 |
+  |---|---|
+  | 换 `Assets/ignite.wav` | §4 三个瞬态表 + 六个闪灭常量 + §10 对应行 |
+  | 动 `ExtinguishLamp` / `PumpPendingTurnOff` | §4「熄灭」全节 + §9 的 `s_turnOffAt` 约束 |
+  | 动 `ApplyLayout` / `ApplyBarSize` | §5「尺寸与设置热更新」+ §5「拖了没反应怎么定位」 |
+  | 动任何 `Unhang` 调用点 | §5「跨场景 / 读档恢复」的 `forget` 语义 + §9 意图快照约束 |
+  | 新增设置项 | `Settings.cs` 的 `[Name]` / `[Description]` / `[Slider]` + README 设置表 + §2 文件地图 |
+- **改字段名可以强制丢旧配置值**：ModSettings 按字段名读 `Mods/LanternBelt.json`，改名等于让老键失效、
+  取新默认值。默认值语义变了就顺手改名（`TurnOffDelaySeconds` → `TurnOffHoldSeconds` 就是这么做的），
+  否则老玩家的旧值会盖住新默认。
+- **不许擅自 `git commit`**：作者（Hemalurgic）自己在实机验证后才提交。协作方可以写提交标题与正文、
+  可以编译并部署 dll 到实机目录用于测试。
+
+## 12. 编译与部署
+
+```
+dotnet build LanternBelt.csproj -c Release
+```
+
+产物 `bin/Release/net6.0/LanternBelt.dll`。目标框架 `net6.0`，引用 STBlade `2.55.0` 的互操作程序集；
+`ModSettings.dll` 从实机 `Mods` 目录引用且 `Private=false`（不能把它一起打包，否则版本冲突）。
+
+部署（测试用）：
+
+```bash
+cp bin/Release/net6.0/LanternBelt.dll \
+   "F:/SteamLibrary/steamapps/common/TheLongDark/Mods/"
+```
+
+`Assets/ignite.wav` 以 `EmbeddedResource` 编进 dll，**不需要**单独拷贝；mod 首次运行会自己解包到
+`Mods/LanternBelt_ignite.wav`（按时间戳判新旧，见 §4）。
+
+上线前自检：
+
+| 检查 | 通过标准 |
+|---|---|
+| `dotnet build -c Release` | `0 警告 0 错误` |
+| 日志 `Harmony 补丁已应用，共 N 个方法` | N 与上一版一致或增多（漏 `PatchAll()` 会加载成功但补丁全不生效） |
+| 日志 `[挂腰] 自定义点火音已就绪 2.61s 48000Hz 2ch（系统播放）` | 出现且时长与 `Assets/ignite.wav` 一致 |
+| 日志 `[挂腰] 熄灭起始（2.80s 后关灯）` | 括号里是设置值，且约 2.8 秒后真的灭 |
+| 挂腰后双手 | 能装备枪械 / 石块，能与物品互动 |
+| `check_docs.py . --lang auto` | `0 个 error` |
+

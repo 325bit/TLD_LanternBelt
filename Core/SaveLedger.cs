@@ -9,14 +9,9 @@ namespace LanternBelt.Core;
 /// <summary>
 /// 把「哪盏提灯挂在腰上、灯亮不亮」写进 ModData，跨场景 / 读档后照原样恢复。
 ///
-/// 为什么必须真存、不能猜：早期版本靠「背包里有一盏**点着**的提灯」反推挂腰状态，
-/// 但玩家完全可以熄灯之后再出门——那样就再也猜不出来，挂腰状态凭空消失（19:55 实测日志）。
-/// HuntingRoads 的瞄准镜能跨场景保留，用的也是这套 <see cref="ModDataManager"/>。
-///
-/// 记录格式：<c>挂腰|物品名|燃油百分比|亮着</c>，例如
-/// <c>1|GEAR_KeroseneLamp_Spelunkers|97.166|0</c>。
-/// 物品名 + 燃油百分比用来在同一存档的多盏提灯里认出「就是这一盏」。
-/// 注意燃油是**百分比 0~100**（<c>GetPercentFuelRemaining</c> 的原样值），不是 0~1 的比例。
+/// 记录格式 <c>挂腰|物品名|燃油百分比|亮着</c>；燃油是 <c>GetPercentFuelRemaining</c> 的
+/// 0~100 原样值（不是比例），它与物品名一起用来在同一存档的多盏提灯里认出这一盏。
+/// 为什么必须真存而不能靠「点着的灯」反推，见 <c>docs/DEVELOPMENT.md</c> §5。
 /// </summary>
 internal static class SaveLedger
 {

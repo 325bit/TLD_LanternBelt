@@ -20,6 +20,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- 点火音嵌进 dll：Wwise 音库收不了外来文件，只能自己带着走 -->
+    <EmbeddedResource Include="Assets/ignite.wav" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- 游戏类型全部落在 Il2Cpp / Il2CppTLD 命名空间，省掉每个文件的 using -->
     <Using Include="Il2Cpp" />
     <!-- 只额外引实机在跑的 ModSettings.dll / ModData.dll，不复制进输出 -->

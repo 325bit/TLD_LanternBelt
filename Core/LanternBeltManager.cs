@@ -10,16 +10,9 @@ namespace LanternBelt.Core;
 /// <summary>
 /// 挂腰状态机：把背包里那盏提灯搬到腰上，并保持它「亮着、发热、看得见」。
 ///
-/// 机制依据（2.55 反汇编，勿凭印象改）：
-/// · <c>KeroseneLampItem.TurnOn</c> 内部会对自己的 <c>HeatSource</c> 调 <c>TurnOn</c>、
-///   把 <c>m_On</c> 置位；<c>Update</c> 只认 <c>m_On</c> / <c>m_FlareIsPaused</c>，不看是否在手。
-/// · 但 <c>HeatSource.TurnOn</c> 是**自己往 <c>HeatSourceManager.m_HeatSources</c> 里注册**的
-///   （列表 AddWithResize）。灯一旦离场被移除，重新 SetActive 不会补注册，所以必须手动登记，
-///   否则「有光没热」。
-/// · 背包里的物品渲染器是关着的（<c>GearItem.m_MeshRenderers</c> / <c>m_IsHidden</c> 决定），
-///   只把 GameObject 激活并不会让它显形，必须逐个打开 Renderer 并把层设回主相机可见层。
-/// · <c>PlayerManager.EquipItem</c> 只会熄灭**手上**那件物品，不会碰背包里的灯，
-///   所以挂腰与手持枪 / 信号棒互不影响。
+/// 依赖四条原版行为：<c>TurnOn</c> 自己置 <c>m_On</c> 并开热量、<c>HeatSource</c> 靠自注册进
+/// <c>m_HeatSources</c>、背包物品的 Renderer 是关着的、换手只熄手上那件。逐条依据见文档 §4。
+/// 音效与闪灭的时间线、熄灭为何需要自己收尾，同见 <c>docs/DEVELOPMENT.md</c> §4。
 /// </summary>
 internal static class LanternBeltManager
 {
@@ -45,6 +38,61 @@ internal static class LanternBeltManager
 	/// <summary>找不到灯时，恢复失败日志的最小间隔。</summary>
 	private const float RestoreDiagIntervalSeconds = 10f;
 
+	/// <summary>
+	/// 熄灭流程的兜底超时。原版熄灭分两级：先播起始音，<c>m_TurnOffDelay</c> 秒后
+	/// 由灯自己的 <c>Update</c> 播第二声并真正关掉。计时要靠那个 <c>Update</c> 在跑，
+	/// 超时还没关就直接一次性关掉，别让灯一直亮着。
+	/// </summary>
+	private const float ExtinguishWatchdogSeconds = 5f;
+
+	/// <summary>
+	/// 玩家亲手悬挂时，先响「拿出提灯」那一声，隔这么久再点火。
+	/// 实测原版装备声只有 ~30ms、点火声 ~135ms，挤在同一帧里就分不出是两声。
+	/// </summary>
+	private const float GearAudioLeadSeconds = 0.45f;
+
+	/// <summary>收起时的金属声比熄灭音晚这么多：原版录像里收纳声跟在熄灭之后，不与它重叠。</summary>
+	private const float StowAudioDelaySeconds = 0.35f;
+
+	/// <summary>
+	/// 熄灭起始音到真正关灯的默认间隔。原版 prefab 给的是 3.67s，熄灭声早在前半秒就落下了，
+	/// 中间全是干等；默认取 2.8s，留一点余韵，玩家嫌慢可以在设置里继续调小。
+	/// </summary>
+	private const float DefaultTurnOffDelaySeconds = 2.8f;
+
+	/// <summary>熄灭延迟的上限，与设置滑条的范围一致。</summary>
+	private const float MaxTurnOffDelaySeconds = 5f;
+
+	// —— 点火闪灭的明暗表（秒，相对点火瞬间）——
+	//
+	// 数字照着我们随包带的点火音（Assets/ignite.wav）量出来，且音频已裁掉开头 0.038s 的底噪，
+	// 所以「播放起点」就等于「第一声开口」。三个尖峰在新文件里的位置：
+	// 0.036s 第一下打火石（峰值 14612）、0.618s 第二下（峰值 10964）、1.642s 燃烧声涌起。
+	// 闪灭压在这三拍上：第一声亮到余韵散、第二声再亮一下、第三声转长亮。
+	/// <summary>第一声的余韵散尽，先灭着等第二声。</summary>
+	private const float FlickerFirstOff = 0.09f;
+
+	/// <summary>第二下打火石（尖峰 0.618s）——提前一点起亮，光才像被这一下点着的。</summary>
+	private const float FlickerSecondOn = 0.61f;
+
+	/// <summary>第二声落，再灭着等点燃那一拍。</summary>
+	private const float FlickerSecondOff = 0.70f;
+
+	/// <summary>火焰真正烧起来的那一拍；从这里开始光照不再闪灭，交还常亮。</summary>
+	private const float FlickerFinalOn = 1.64f;
+
+	/// <summary>燃烧循环音从这里接上，和点火音尾部交叠一小段，避免出现无声的空档。</summary>
+	private const float FlickerLoopAt = 2.45f;
+
+	/// <summary>整段闪灭的长度；到点把灯光交还给原版 <c>UpdateEffects</c>。</summary>
+	private const float FlickerDurationSeconds = 2.61f;
+
+	/// <summary>
+	/// 闪灭期间把原版计时器冻在这个值。它每帧都在 <c>+= deltaTime</c>，
+	/// 冻成 -1 的话撑不住两秒半就会被越过、原版抢先点灯；留出整段时长的余量才安全。
+	/// </summary>
+	private const float FlickerTimerFreeze = -4f;
+
 	private const string KeyPrefix = "LANTERNBELT_";
 
 	// ────────────────────────── 运行状态 ──────────────────────────
@@ -68,6 +116,9 @@ internal static class LanternBeltManager
 	private static bool s_hadRigidbody;
 	private static bool s_origKinematic;
 
+	/// <summary>挂腰前的 <c>m_TurnOffDelay</c>；小于 0 表示没记到、收起时不还原。</summary>
+	private static float s_origTurnOffDelay = -1f;
+
 	// —— 我们打开过的渲染器，收起时按原样恢复 ——
 	private static readonly List<Renderer> s_renderers = new List<Renderer>();
 	private static readonly List<bool> s_rendererWasEnabled = new List<bool>();
@@ -88,6 +139,51 @@ internal static class LanternBeltManager
 
 	/// <summary>蹲下时挂点已经下移的量（米），插值跟随，避免蹲/起瞬间跳变。</summary>
 	private static float s_crouchDrop;
+
+	/// <summary>上一次发起「熄灭」的时间，只给兜底超时用。</summary>
+	private static float s_extinguishAt;
+
+	/// <summary>
+	/// 该真正关灯的时刻；0 表示没有待处理的熄灭。
+	///
+	/// 不能指望原版 <c>Update</c> 来收尾：它那段熄灭计时的前面有一句
+	/// <c>if (FirstPersonHandsEnabled(m_GearItem)) skip</c>，挂腰时双手是空的，这句恒为真，
+	/// 于是 <c>m_TurnOffDelay</c> 从来没被用上——只能等 5 秒兜底才灭。
+	/// </summary>
+	private static float s_turnOffAt;
+
+	/// <summary>上一次尝试点燃的时间。原版拒绝点燃时（比如油量判零）别每帧重试。</summary>
+	private static float s_lastIgniteAt;
+
+	/// <summary>这段时间之前不许点火：等悬挂的金属声响完。</summary>
+	private static float s_igniteNotBefore;
+
+	// —— 点火闪灭（短亮 / 短亮 / 长亮）——
+	private static bool s_flickerActive;
+	private static float s_flickerStart;
+	private static IntPtr s_flickerLamp;
+
+	/// <summary>这一段的火焰特效是否已经点起来（到 FlickerFinalOn 那一拍才置真）。</summary>
+	private static bool s_flickerFireLit;
+
+	/// <summary>燃烧循环音是否已经接上（自定义点火音快放完时才接，避免重复）。</summary>
+	private static bool s_flickerLoopPlayed;
+
+	/// <summary>这一次要不要闪（设置里关掉闪灭时仍然走同一条时间线，只是灯一直亮着）。</summary>
+	private static bool s_flickerFlickers;
+
+	/// <summary>这一次要不要出声：控制点火音与到点后的燃烧循环。</summary>
+	private static bool s_flickerAudio;
+
+	/// <summary>延后播放的音效（收起的金属声要等熄灭音先响）。</summary>
+	private static readonly List<PendingSound> s_pendingSounds = new List<PendingSound>();
+
+	private struct PendingSound
+	{
+		public float At;
+		public Il2CppAK.Wwise.Event? Evt;
+		public string Tag;
+	}
 
 	// —— 「应该挂在腰上」的意图快照 ——
 	//
@@ -226,7 +322,8 @@ internal static class LanternBeltManager
 			return true;
 		}
 
-		return Hang(gi);
+		// 玩家亲手挂上去：这一次点燃要出点火音
+		return Hang(gi, audible: true);
 	}
 
 	/// <summary>同一次点击产生的后续请求：吞掉，但不改变状态。</summary>
@@ -257,7 +354,7 @@ internal static class LanternBeltManager
 		return false;
 	}
 
-	internal static bool Hang(GearItem gi, bool? forcedLit = null)
+	internal static bool Hang(GearItem gi, bool? forcedLit = null, bool audible = false)
 	{
 		if (gi == null || !IsLantern(gi))
 		{
@@ -304,10 +401,34 @@ internal static class LanternBeltManager
 
 		s_hung = gi;
 
-		// 从存档恢复时按「当时是亮还是灭」还原，不要用设置覆盖玩家上次的选择
+		// 记下原版熄灭延迟：挂腰期间会把它压短，收起时还回去
+		s_origTurnOffDelay = -1f;
+
+		try
+		{
+			var lampComp = gi.m_KeroseneLampItem;
+			if (lampComp != null)
+			{
+				s_origTurnOffDelay = lampComp.m_TurnOffDelay;
+			}
+		}
+		catch
+		{
+			// 读不到就保持 -1，收起时不做还原
+		}
+
+		// 读档 / 换场景恢复时按「当时是亮还是灭」还原，不要用设置覆盖玩家上次的选择
 		s_wantLit = forcedLit ?? (Cfg?.LightOnHang ?? true);
 
-		Apply(force: true);
+		// 玩家亲手挂上腰：先响「拿出提灯」的金属声，点火让路等它响完
+		if (audible)
+		{
+			PlayGearAudio(gi, stow: false);
+			s_igniteNotBefore = Time.unscaledTime + GearAudioLeadSeconds;
+		}
+
+		// 点火是不是该出声由调用方决定：玩家点按钮要响，读档 / 自动挂回保持静默
+		Apply(force: true, audible: audible);
 
 		if (s_hung == null)
 		{
@@ -360,9 +481,19 @@ internal static class LanternBeltManager
 		try
 		{
 			var lamp = gi.m_KeroseneLampItem;
-			if (lamp != null && (Cfg?.ExtinguishOnUnhang ?? true) && lamp.IsOn())
+			if (lamp != null)
 			{
-				lamp.TurnOff(true);
+				if ((Cfg?.ExtinguishOnUnhang ?? true) && lamp.IsOn())
+				{
+					// 玩家亲手收起：响一声熄灭音；换场景 / 内部路径（quiet）保持静默
+					lamp.TurnOff(!quiet);
+				}
+
+				// 把挂腰时压短的熄灭延迟换回原版值：拿着灯手动关灯的手感不该被这个 mod 改掉
+				if (s_origTurnOffDelay >= 0f)
+				{
+					lamp.m_TurnOffDelay = s_origTurnOffDelay;
+				}
 			}
 
 			SetHeat(gi, false);
@@ -382,6 +513,13 @@ internal static class LanternBeltManager
 		ResumePhysics(gi);
 
 		ClearState();
+
+		// 玩家亲手收起：熄灭音先响，金属收纳声随后跟上（排在 ClearState 之后，
+		// 它会把待播队列一起清掉，是给「内部路径」准备的）
+		if (!quiet)
+		{
+			QueueGearAudio(gi, stow: true);
+		}
 
 		if (forget)
 		{
@@ -516,6 +654,15 @@ internal static class LanternBeltManager
 
 	internal static void Tick()
 	{
+		// 自定义点火音是异步载入的，与挂腰状态无关，放在最前面每帧推进
+		LampAudio.Tick();
+
+		// 先把到点的音效放掉：收起的金属声排在卸下之后，那时 s_hung 已经是空的了
+		FlushPendingSounds();
+
+		// 熄灭到点了就自己关灯，不等原版那段被 FirstPersonHandsEnabled 挡住的计时
+		PumpPendingTurnOff();
+
 		if (s_hung == null)
 		{
 			ReconcileIntent();
@@ -523,6 +670,67 @@ internal static class LanternBeltManager
 		}
 
 		Apply();
+
+		// 灯的 Update 没在跑时（被停用 / 中途熄灭）闪灭会卡住，兜底收尾
+		if (s_flickerActive && Time.unscaledTime - s_flickerStart > FlickerDurationSeconds + 1f)
+		{
+			EndFlicker(TryGetHungLamp());
+		}
+	}
+
+	/// <summary>取挂着那盏灯的组件，取不到就返回空（调用方一律按可空处理）。</summary>
+	private static KeroseneLampItem? TryGetHungLamp()
+	{
+		try
+		{
+			GearItem? gi = s_hung;
+			return gi == null ? null : gi.m_KeroseneLampItem;
+		}
+		catch
+		{
+			return null;
+		}
+	}
+
+	/// <summary>
+	/// 熄灭的第二级：到点播第二声并真正关灯。
+	///
+	/// 原版 <c>Update</c> 里那段熄灭计时被 <c>FirstPersonHandsEnabled</c> 挡着（挂腰时双手是空的，
+	/// 这句恒为真），所以 <c>m_TurnOffDelay</c> 根本轮不到用——不自己算就只能等 5 秒兜底。
+	/// </summary>
+	private static void PumpPendingTurnOff()
+	{
+		if (s_turnOffAt <= 0f || Time.unscaledTime < s_turnOffAt)
+		{
+			return;
+		}
+
+		s_turnOffAt = 0f;
+
+		KeroseneLampItem? lamp = TryGetHungLamp();
+		if (lamp == null)
+		{
+			return;
+		}
+
+		try
+		{
+			if (!lamp.m_TurningOff)
+			{
+				return;
+			}
+
+			lamp.TurnOff(true);
+
+			if (Cfg?.Verbose ?? false)
+			{
+				ModLog.Msg($"[挂腰] 熄灭第二声并关灯（延迟 {lamp.m_TurnOffDelay:F2}s 到点）");
+			}
+		}
+		catch (Exception ex)
+		{
+			ModLog.Warning("到点关灯失败：" + ex.Message);
+		}
 	}
 
 	internal static void OnSceneChanged(string sceneName)
@@ -584,7 +792,7 @@ internal static class LanternBeltManager
 
 	// ────────────────────────── 摆放与显示 ──────────────────────────
 
-	private static void Apply(bool force = false)
+	private static void Apply(bool force = false, bool audible = false)
 	{
 		GearItem? gi = s_hung;
 		if (gi == null)
@@ -674,7 +882,7 @@ internal static class LanternBeltManager
 
 			StageRenderers(gi);
 
-			ReconcileLamp(gi, playerInitiated: false);
+			ReconcileLamp(gi, playerInitiated: audible);
 
 			if (!s_diagLogged && (Cfg?.Verbose ?? false))
 			{
@@ -939,6 +1147,179 @@ internal static class LanternBeltManager
 
 	// ────────────────────────── 灯光与热量 ──────────────────────────
 
+	/// <summary>
+	/// 这次操作该不该出声：只有玩家亲手触发、并且设置里没关掉音效，才放音。
+	/// 内部路径（换场景恢复、状态校正）一律静音。
+	/// </summary>
+	private static bool Audible(bool playerInitiated)
+	{
+		return playerInitiated && (Cfg?.PlayLampAudio ?? true);
+	}
+
+	// ────────────────────────── 音效 ──────────────────────────
+
+	/// <summary>
+	/// 播一个 Wwise 事件，返回播放 id——原版 <c>TurnOff</c> 就是靠
+	/// <c>m_LoopAudioID</c> / <c>m_TurnOnAudioID</c> 把循环音停掉的，自己播的必须记回去。
+	/// </summary>
+	private static uint PlayEvent(Il2CppAK.Wwise.Event? evt, GameObject? source, string what)
+	{
+		if (evt == null)
+		{
+			return 0;
+		}
+
+		try
+		{
+			uint id = GameAudioManager.PlaySound(evt, source);
+
+			if (Cfg?.Verbose ?? false)
+			{
+				ModLog.Msg($"[挂腰] 音效 {what} id={id} 事件={DescribeEvent(evt)}");
+			}
+
+			return id;
+		}
+		catch (Exception ex)
+		{
+			if (Cfg?.Verbose ?? false)
+			{
+				ModLog.Warning($"音效「{what}」播放失败：{ex.Message}");
+			}
+
+			return 0;
+		}
+	}
+
+	/// <summary>立刻掐掉循环音（原版 <c>StopLoopingAudio</c> 带 100ms 淡出，会盖住点火声）。</summary>
+	private static void StopLoopNow(KeroseneLampItem lamp)
+	{
+		try
+		{
+			uint id = lamp.m_LoopAudioID;
+			if (id != 0)
+			{
+				GameAudioManager.StopPlayingID(ref id, 0);
+			}
+
+			lamp.m_LoopAudioID = 0;
+		}
+		catch
+		{
+			// 停止失败不影响后续流程，TurnOff 还会再停一次
+		}
+	}
+
+	/// <summary>读 Wwise 事件名，只为日志可读；读不到也不影响播放。</summary>
+	private static string DescribeEvent(Il2CppAK.Wwise.Event? evt)
+	{
+		if (evt == null)
+		{
+			return "<空>";
+		}
+
+		try
+		{
+			string? name = evt.Name;
+			return string.IsNullOrEmpty(name) ? "<无名>" : name;
+		}
+		catch
+		{
+			return "<未知>";
+		}
+	}
+
+	/// <summary>
+	/// 装备音：悬挂播原版「拿出」、收起播「收回」，都是 <c>GearItemData</c> 上挂的那两个事件，
+	/// 与手持装备时听到的完全一致（实测是一声很短的金属碰响，不是持续的摇晃）。
+	///
+	/// 用 <c>InterfaceManager.GetSoundEmitter()</c> 当声源而不是灯自己：收起时灯已被隐藏，
+	/// 挂在它身上的声源不会再发声。
+	/// </summary>
+	private static void PlayGearAudio(GearItem? gi, bool stow)
+	{
+		if (!(Cfg?.PlayGearAudio ?? true))
+		{
+			return;
+		}
+
+		try
+		{
+			GearItemData? data = gi?.m_GearItemData;
+			if (data == null)
+			{
+				return;
+			}
+
+			Il2CppAK.Wwise.Event? evt = stow ? data.m_StowAudio : data.m_PickupAudio;
+			PlayEvent(evt, InterfaceManager.GetSoundEmitter(), stow ? "收起" : "悬挂");
+		}
+		catch (Exception ex)
+		{
+			if (Cfg?.Verbose ?? false)
+			{
+				ModLog.Warning("装备音播放失败：" + ex.Message);
+			}
+		}
+	}
+
+	/// <summary>把装备音排到稍后（收起声要跟在熄灭音后面）。</summary>
+	private static void QueueGearAudio(GearItem? gi, bool stow)
+	{
+		if (!(Cfg?.PlayGearAudio ?? true) || gi == null)
+		{
+			return;
+		}
+
+		try
+		{
+			GearItemData? data = gi.m_GearItemData;
+			if (data == null)
+			{
+				return;
+			}
+
+			Il2CppAK.Wwise.Event? evt = stow ? data.m_StowAudio : data.m_PickupAudio;
+			if (evt == null)
+			{
+				return;
+			}
+
+			s_pendingSounds.Add(new PendingSound
+			{
+				At = Time.unscaledTime + StowAudioDelaySeconds,
+				Evt = evt,
+				Tag = stow ? "收起" : "悬挂"
+			});
+		}
+		catch
+		{
+			// 记录已失效（物体被销毁），不播就是了
+		}
+	}
+
+	private static void FlushPendingSounds()
+	{
+		if (s_pendingSounds.Count == 0)
+		{
+			return;
+		}
+
+		float now = Time.unscaledTime;
+
+		for (int i = s_pendingSounds.Count - 1; i >= 0; i--)
+		{
+			PendingSound p = s_pendingSounds[i];
+			if (now < p.At)
+			{
+				continue;
+			}
+
+			s_pendingSounds.RemoveAt(i);
+			PlayEvent(p.Evt, InterfaceManager.GetSoundEmitter(), p.Tag);
+		}
+	}
+
 	private static void ReconcileLamp(GearItem gi, bool playerInitiated)
 	{
 		var lamp = gi.m_KeroseneLampItem;
@@ -953,11 +1334,21 @@ internal static class LanternBeltManager
 		{
 			if (isOn)
 			{
-				lamp.TurnOff(!playerInitiated);
+				// 原版熄灭是两级的：先播「熄灭起始」音，`m_TurnOffDelay` 秒后再播熄灭音并真正关灯。
+				// 这段流程里灯还是亮的，别去抢跑，也别重复触发。
+				ExtinguishLamp(lamp, Audible(playerInitiated));
+				return;
 			}
 
 			SetHeat(gi, false);
 			return;
+		}
+
+		if (isOn && lamp.m_TurningOff)
+		{
+			// 正在熄灭又被要求点亮：把那一次熄灭撤掉，比「先关掉再点亮」自然得多。
+			// 撤完继续往下走——灯本来就是亮的，落到底部的热量补登即可。
+			CancelExtinguish(lamp);
 		}
 
 		if (!isOn)
@@ -971,7 +1362,7 @@ internal static class LanternBeltManager
 				return;
 			}
 
-			TurnOnSafely(lamp);
+			IgniteLamp(lamp, playerInitiated);
 		}
 
 		// 关键：灯亮 ≠ 有热。HeatSource 是自己注册到 HeatSourceManager 的，
@@ -980,31 +1371,328 @@ internal static class LanternBeltManager
 	}
 
 	/// <summary>
-	/// 点亮提灯，但**不调用原版 <c>TurnOn</c>**。
-	///
-	/// 反汇编（RVA 0x120BA30）显示 <c>TurnOn</c> 的收尾是：
-	/// <code>
-	/// if (PlayerAnimation.FirstPersonHandsEnabled(m_GearItem))
-	///     PlayerAnimation.Trigger_Generic_Ignite(null, null);   // ← 第一人称点灯手势
-	/// </code>
-	/// 这个手势要求提灯在第一人称手部槽位。挂腰时手上没有灯，动画收不回来，
-	/// <c>PlayerAnimation</c> 的状态机就停在「正在点燃」——表现为**双手锁死：不能装备枪械 /
-	/// 石块 / 木炭，也不能与物品互动**。
-	///
-	/// 所以这里直接把原版那几个字段摆成「已点亮」：<c>m_On = true</c> 之后
-	/// <c>Update</c> 每帧会跑 <c>UpdateEffects</c> 与 <c>ReduceFuel</c>，光照、烧油、热量全都照旧，
-	/// 只是不会去碰手部动画。
+	/// 点亮提灯：照调原版 <c>TurnOn</c> 拿状态，音效与闪灭自己排。
+	/// 传 <c>suppressStartAudio = true</c>：原版只摆 <c>m_On</c> / 热量 / 耐久判定，不把
+	/// <c>m_TurnOnEvent</c> 和 <c>m_LoopWithDelayEvent</c> 塞进同一帧，也不触发第一人称手势；
+	/// 点火音换成随包带的音频，闪灭按它的节奏排，全程冻住计时器防原版抢点灯。
+	/// 音效与闪灭两个开关都关时才直接长亮。
 	/// </summary>
-	private static void TurnOnSafely(KeroseneLampItem lamp)
+	private static void IgniteLamp(KeroseneLampItem lamp, bool playerInitiated)
+	{
+		// 每帧校正都会走到这里；原版可能因为油量判零之类的理由拒绝点燃，
+		// 没有这道闸就会每秒喊六十遍 TurnOn
+		if (Time.unscaledTime - s_lastIgniteAt < 1f)
+		{
+			return;
+		}
+
+		// 刚挂上腰：等「拿出提灯」的金属声响完再点火，别把两个音效叠在一起
+		if (Time.unscaledTime < s_igniteNotBefore)
+		{
+			return;
+		}
+
+		s_igniteNotBefore = 0f;
+		s_lastIgniteAt = Time.unscaledTime;
+
+		bool audible = playerInitiated && (Cfg?.PlayLampAudio ?? true);
+		bool flicker = playerInitiated && (Cfg?.PlayIgniteFlicker ?? true);
+
+		try
+		{
+			lamp.TurnOn(true);
+
+			// suppressStartAudio 那条分支会顺手起一个循环音（m_LoopEvent），当场掐掉：
+			// 我们要等「点燃」那一拍才让火开始烧。用 fadeOut = 0 而不是原版
+			// StopLoopingAudio 的 100ms 淡出，免得那点尾音和点火声糊在一起。
+			StopLoopNow(lamp);
+
+			// 既不出声也不闪（读档恢复、两个开关都关了）：直接点亮最省事
+			if (!audible && !flicker)
+			{
+				lamp.HideEffects(false);
+				lamp.m_TurnOnEffectsTimer = lamp.m_TurnOnEffectsDelay + 0.01f;
+
+				if (Cfg?.Verbose ?? false)
+				{
+					ModLog.Msg("[挂腰] 点亮 静音且不闪 直接长亮");
+				}
+
+				return;
+			}
+
+			BeginIgniteSequence(lamp, flicker, audible);
+		}
+		catch (Exception ex)
+		{
+			// TurnOn 里任何一环失败都别让灯点不着：退回直接摆字段，
+			// 只是没有音效和闪灭，至少光还是亮的
+			ModLog.Warning("原版点火失败，改为直接点亮：" + ex.Message);
+			ForceOnFields(lamp);
+		}
+	}
+
+	/// <summary>
+	/// 点火的时间线起点：先播点火音，再按它的节奏推进灯光。
+	///
+	/// 后续每帧由 <c>UpdateEffects</c> 的 Postfix 推进（那是最靠后的写光源时机），
+	/// 全程冻住 <c>m_TurnOnEffectsTimer</c>，否则原版会中途把灯直接点亮，闪灭就看不见了。
+	/// </summary>
+	private static void BeginIgniteSequence(KeroseneLampItem lamp, bool flicker, bool audible)
+	{
+		s_flickerActive = true;
+		s_flickerFlickers = flicker;
+		s_flickerAudio = audible;
+		s_flickerStart = Time.unscaledTime;
+		s_flickerFireLit = false;
+		s_flickerLoopPlayed = false;
+
+		try
+		{
+			s_flickerLamp = lamp.Pointer;
+		}
+		catch
+		{
+			s_flickerLamp = IntPtr.Zero;
+		}
+
+		// 不闪灭时立刻把火焰点起来，只让光源保持常亮；循环音仍然等点火音快放完才接
+		if (!flicker)
+		{
+			lamp.HideEffects(false);
+		}
+
+		// 从这一帧起就冻住原版计时，别等下一次 UpdateEffects——延迟设得短的灯会趁那一帧亮起来
+		lamp.m_TurnOnEffectsTimer = FlickerTimerFreeze;
+		SetLampVisual(lamp, !flicker);
+
+		if (audible)
+		{
+			PlayIgniteAudio(lamp);
+		}
+
+		if (Cfg?.Verbose ?? false)
+		{
+			ModLog.Msg($"[挂腰] 点火 闪灭={(flicker ? "开" : "关")}"
+				+ $" 音效={(audible ? "开" : "静")}"
+				+ $" 时间线 亮到{FlickerFirstOff:F2}/再亮{FlickerSecondOn:F2}/长亮{FlickerFinalOn:F2}s"
+				+ $" 循环音 {FlickerLoopAt:F2}s 共 {FlickerDurationSeconds:F2}s");
+		}
+	}
+
+	/// <summary>
+	/// 播点火音：优先用随包带的那一段（<see cref="LampAudio"/>），拿不到才退回原版 Wwise 事件。
+	/// 时间线是照着自定义音频量的，退回去时节奏对不上，所以退回时只当作声音处理，不影响灯光。
+	/// </summary>
+	private static void PlayIgniteAudio(KeroseneLampItem lamp)
+	{
+		float volume = Mathf.Clamp01(Cfg?.IgniteAudioVolume ?? 1f);
+
+		if (volume > 0.001f && LampAudio.Play(volume))
+		{
+			if (Cfg?.Verbose ?? false)
+			{
+				ModLog.Msg($"[挂腰] 音效 点火 自定义 {LampAudio.Length:F2}s 音量={volume:F2}");
+			}
+
+			return;
+		}
+
+		lamp.m_TurnOnAudioID = PlayEvent(lamp.m_TurnOnEvent, lamp.gameObject, "点火(原版)");
+	}
+
+	/// <summary>
+	/// 每帧推进点火闪灭。挂在 <c>KeroseneLampItem.UpdateEffects</c> 的 Postfix 上，
+	/// 这样我们写光源的时间总是晚于原版，不会被它当场覆盖。
+	/// </summary>
+	internal static void OnLampUpdated(KeroseneLampItem? lamp)
+	{
+		if (!s_flickerActive || lamp == null)
+		{
+			return;
+		}
+
+		try
+		{
+			if (lamp.Pointer != s_flickerLamp)
+			{
+				return;
+			}
+
+			float t = Time.unscaledTime - s_flickerStart;
+
+			if (!s_flickerFireLit && t >= FlickerFinalOn)
+			{
+				// 「点燃」那一拍：火焰真正烧起来
+				s_flickerFireLit = true;
+				lamp.HideEffects(false);
+			}
+
+			if (!s_flickerLoopPlayed && t >= FlickerLoopAt)
+			{
+				// 自定义点火音快放完了，接上原版的燃烧循环，不留无声的空档
+				s_flickerLoopPlayed = true;
+
+				if (s_flickerAudio)
+				{
+					lamp.m_LoopAudioID = PlayEvent(lamp.m_LoopWithDelayEvent, lamp.gameObject, "燃烧循环");
+				}
+			}
+
+			if (t >= FlickerDurationSeconds)
+			{
+				EndFlicker(lamp);
+				return;
+			}
+
+			// 冻住原版计时：它一旦越过门槛就会把该亮的光源全部打开，闪灭就白做了
+			lamp.m_TurnOnEffectsTimer = FlickerTimerFreeze;
+			SetLampVisual(lamp, !s_flickerFlickers || FlickerLit(t));
+		}
+		catch (Exception ex)
+		{
+			if (Cfg?.Verbose ?? false)
+			{
+				ModLog.Warning("点火闪灭推进失败：" + ex.Message);
+			}
+
+			EndFlicker(lamp);
+		}
+	}
+
+	/// <summary>闪灭结束：把计时器推过门槛，灯光重新交给原版 <c>UpdateEffects</c> 管。</summary>
+	private static void EndFlicker(KeroseneLampItem? lamp)
+	{
+		if (!s_flickerActive)
+		{
+			return;
+		}
+
+		s_flickerActive = false;
+		s_flickerLamp = IntPtr.Zero;
+
+		if (lamp == null)
+		{
+			return;
+		}
+
+		try
+		{
+			lamp.HideEffects(false);
+			lamp.m_TurnOnEffectsTimer = lamp.m_TurnOnEffectsDelay + 0.01f;
+		}
+		catch (Exception ex)
+		{
+			if (Cfg?.Verbose ?? false)
+			{
+				ModLog.Warning("结束闪灭失败：" + ex.Message);
+			}
+		}
+	}
+
+	/// <summary>闪灭的明暗表：第一下打火就亮 → 灭 → 第二下再亮 → 灭 → 长亮。</summary>
+	private static bool FlickerLit(float t)
+	{
+		// 音频已裁掉前导静音，t = 0 就是第一下打火石开口，所以一上来就亮
+		if (t < FlickerFirstOff)
+		{
+			return true;
+		}
+
+		if (t < FlickerSecondOn)
+		{
+			return false;
+		}
+
+		if (t < FlickerSecondOff)
+		{
+			return true;
+		}
+
+		if (t < FlickerFinalOn)
+		{
+			return false;
+		}
+
+		return true;
+	}
+
+	/// <summary>同时改火焰特效与三盏光源，闪灭时两者一致。</summary>
+	private static void SetLampVisual(KeroseneLampItem lamp, bool on)
+	{
+		try
+		{
+			GameObject? fx = lamp.m_FXGameObject;
+			GameObject? self = lamp.gameObject;
+
+			// 特效对象万一就是灯本身，关掉它连 KeroseneLampItem.Update 一起停，闪灭当场卡死
+			bool separate = fx != null && self != null && fx.Pointer != self.Pointer;
+
+			if (separate && fx!.activeSelf != on)
+			{
+				fx.SetActive(on);
+			}
+		}
+		catch
+		{
+			// 特效对象已被销毁，忽略
+		}
+
+		SetLampLights(lamp, on);
+	}
+
+	/// <summary>按原版 <c>UpdateEffects</c> 的规则开关光源：室外灯优先，否则室内 + 核心。</summary>
+	private static void SetLampLights(KeroseneLampItem lamp, bool on)
+	{
+		bool outdoor = false;
+
+		try
+		{
+			Weather? weather = GameManager.GetWeatherComponent();
+			outdoor = weather != null && weather.UseOutdoorLightingForLightSources();
+		}
+		catch
+		{
+			outdoor = false;
+		}
+
+		SetLight(lamp.m_LightIndoor, on && !outdoor);
+		SetLight(lamp.m_LightIndoorCore, on && !outdoor);
+		SetLight(lamp.m_LightOutdoor, on && outdoor);
+	}
+
+	private static void SetLight(Light? light, bool on)
+	{
+		if (light == null)
+		{
+			return;
+		}
+
+		try
+		{
+			if (light.enabled != on)
+			{
+				light.enabled = on;
+			}
+		}
+		catch
+		{
+			// 组件已销毁，忽略
+		}
+	}
+
+	/// <summary>把灯强行摆成「已点亮」，只在原版 <c>TurnOn</c> 抛异常时兜底。</summary>
+	private static void ForceOnFields(KeroseneLampItem lamp)
 	{
 		try
 		{
 			lamp.m_On = true;
-
-			// UpdateEffects 第一段就是 if (!m_TurnOnComplete) { …手势… }，置真即可整段跳过
 			lamp.m_TurnOnComplete = true;
 			lamp.m_TurningOff = false;
-			lamp.m_TurnOnEffectsTimer = 0f;
+
+			// 计时器直接推过门槛：UpdateEffects 下一次就会把光源点亮，
+			// 不至于点着了还要黑着等一段 m_TurnOnEffectsDelay
+			lamp.m_TurnOnEffectsTimer = lamp.m_TurnOnEffectsDelay + 0.01f;
 
 			GameObject? fx = lamp.m_FXGameObject;
 			if (fx != null && !fx.activeSelf)
@@ -1014,17 +1702,108 @@ internal static class LanternBeltManager
 		}
 		catch (Exception ex)
 		{
-			// 字段写不进去（版本差异）时退回原版，但至少把手势压掉
-			ModLog.Warning("直接点亮失败，回退原版 TurnOn：" + ex.Message);
+			LogError("点亮提灯失败：" + ex.Message);
+		}
+	}
+
+	/// <summary>
+	/// 熄灭提灯：玩家主动关灯时走原版 <c>TurnOffDelayed</c>——它先播「熄灭起始」音、
+	/// 置 <c>m_TurningOff</c>，等 <c>m_TurnOffDelay</c> 之后灯自己的 <c>Update</c>
+	/// 再播第二声熄灭音并真正关灯，与手持时听到的完全一致。
+	///
+	/// 静音路径（换场景、燃料耗尽、关掉音效设置）用 <c>TurnOff(false)</c>，
+	/// 免得每次过图都莫名其妙响一声。
+	/// </summary>
+	private static void ExtinguishLamp(KeroseneLampItem lamp, bool playAudio)
+	{
+		try
+		{
+			// 点火闪灭还没走完就要关灯：先把闪灭收尾，否则它每帧都在抢光源
+			if (s_flickerActive)
+			{
+				EndFlicker(lamp);
+			}
+
+			// 点火音可能还在「呲」，关灯时一并掐掉，否则熄灭声和它叠在一起
+			LampAudio.Stop();
+
+			if (lamp.m_TurningOff)
+			{
+				// 已经在熄灭流程里：等它自己走完；
+				// 万一灯的 Update 没在跑（物体被停用 / 离场），超时就一次性关掉
+				if (Time.unscaledTime - s_extinguishAt > ExtinguishWatchdogSeconds)
+				{
+					ModLog.Warning("[挂腰] 熄灭超时，直接关灯");
+					s_turnOffAt = 0f;
+					lamp.TurnOff(false);
+				}
+
+				return;
+			}
+
+			s_extinguishAt = Time.unscaledTime;
+
+			if (playAudio)
+			{
+				// 原版把「真正关灯」押后 m_TurnOffDelay 秒，prefab 里填到近四秒——
+				// 一声「呼」之后灯还亮着，玩家只听到声音、看不到变化。
+				float delay = Mathf.Clamp(
+					Cfg?.TurnOffHoldSeconds ?? DefaultTurnOffDelaySeconds, 0f, MaxTurnOffDelaySeconds);
+
+				lamp.m_TurnOffDelay = delay;
+
+				lamp.TurnOffDelayed();
+
+				// 原版收不了尾（它的计时被 FirstPersonHandsEnabled 挡着），这里自己记时刻
+				s_turnOffAt = Time.unscaledTime + delay;
+
+				if (Cfg?.Verbose ?? false)
+				{
+					ModLog.Msg($"[挂腰] 熄灭起始（{delay:F2}s 后关灯）");
+				}
+			}
+			else
+			{
+				lamp.TurnOff(false);
+			}
+		}
+		catch (Exception ex)
+		{
+			ModLog.Warning("原版熄灭失败，改为直接关灯：" + ex.Message);
 
 			try
 			{
-				lamp.TurnOn(true);
-				lamp.m_TurnOnComplete = true;
+				lamp.TurnOff(false);
 			}
 			catch (Exception inner)
 			{
-				LogError("点亮提灯失败：" + inner.Message);
+				LogError("关灯失败：" + inner.Message);
+			}
+		}
+	}
+
+	/// <summary>撤回一次还没走完的熄灭（玩家连按两下开关灯键时会发生）。</summary>
+	private static void CancelExtinguish(KeroseneLampItem lamp)
+	{
+		try
+		{
+			lamp.m_TurningOff = false;
+			lamp.m_TurnOffTimer = 0f;
+			lamp.m_TurnOnComplete = true;
+
+			// 撤销后就不该再有「到点关灯」这回事，否则下一帧会把它又灭了
+			s_turnOffAt = 0f;
+
+			if (Cfg?.Verbose ?? false)
+			{
+				ModLog.Msg("[挂腰] 撤销熄灭：灯保持点亮");
+			}
+		}
+		catch (Exception ex)
+		{
+			if (Cfg?.Verbose ?? false)
+			{
+				ModLog.Warning("撤销熄灭失败：" + ex.Message);
 			}
 		}
 	}
@@ -1188,10 +1967,25 @@ internal static class LanternBeltManager
 		s_origWasInHands = false;
 		s_hadRigidbody = false;
 		s_origKinematic = false;
+		s_origTurnOffDelay = -1f;
 		s_wantLit = false;
 		s_heat = null;
 		s_diagLogged = false;
 		s_crouchDrop = 0f;
+		s_turnOffAt = 0f;
+
+		// 闪灭与待播音效都跟着这次挂腰一起作废，别让它落到下一盏灯身上
+		s_flickerActive = false;
+		s_flickerFlickers = false;
+		s_flickerAudio = false;
+		s_flickerFireLit = false;
+		s_flickerLamp = IntPtr.Zero;
+		s_flickerLoopPlayed = false;
+		s_igniteNotBefore = 0f;
+		s_pendingSounds.Clear();
+
+		// 点火音还没放完就把灯收起来了：别让「呲」的尾音跟着玩家走
+		LampAudio.Stop();
 	}
 
 	private static void SuspendPhysics(GearItem gi)

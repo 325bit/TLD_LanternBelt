@@ -25,6 +25,28 @@ internal class Settings : JsonModSettings
 	[Description("把提灯从腰上收回背包时吹灭它，符合原版「放进背包的灯不会一直烧油」的规则。")]
 	public bool ExtinguishOnUnhang = true;
 
+	[Name("开关灯音效")]
+	[Description("挂腰时开灯 / 关灯播放原版的点火音、燃烧循环音与熄灭音。关掉后这两个动作完全静音，但点火时灯光闪一下的效果仍然保留。")]
+	public bool PlayLampAudio = true;
+
+	[Name("点火声音量")]
+	[Description("点火那一段（擦火、燃起）的音量。这一段用的是本 mod 自带的音频文件，和游戏整体的音效音量不是同一套，觉得吵或者听不清就调这里。调到 0 等于不播点火音。")]
+	[Slider(0f, 1f)]
+	public float IgniteAudioVolume = 1f;
+
+	[Name("关灯延迟（秒）")]
+	[Description("按下关灯后熄灭声先响，隔这么久灯才真正灭掉并响第二声。默认 2.8 秒；调小更干脆，调到 0 就是声音一响立刻灭。")]
+	[Slider(0f, 5f)]
+	public float TurnOffHoldSeconds = 2.8f;
+
+	[Name("悬挂 / 收起的装备声")]
+	[Description("悬挂提灯、收起提灯时播放原版的「拿出 / 收回」金属声。关掉后这两个动作静音，开灯音效与闪灭不受影响。")]
+	public bool PlayGearAudio = true;
+
+	[Name("点火闪灭")]
+	[Description("按开关灯键点火时，灯光跟着声效走「短亮 — 短亮 — 长亮」，像擦火柴。关掉后点火即长亮；读档恢复本来就是直接长亮。")]
+	public bool PlayIgniteFlicker = true;
+
 	[Name("读档后自动恢复")]
 	[Description("读档或进入新场景时，如果背包里有一盏点着的提灯，自动重新挂回腰上。")]
 	public bool AutoRestore = true;

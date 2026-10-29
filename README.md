@@ -2,7 +2,7 @@
 
 [English](#english) · [中文](#中文)
 
-![version](https://img.shields.io/badge/version-1.7.5-informational)
+![version](https://img.shields.io/badge/version-1.10.3-informational)
 
 ![game](https://img.shields.io/badge/The%20Long%20Dark-2.55-success)
 
@@ -25,10 +25,12 @@ A The Long Dark mod that hangs a kerosene lantern on your belt, keeping both han
 - While it is hung, a white fuel bar appears in the bottom-right corner with "Fuel 87% · Condition 100%" right under it; both disappear once you take the lantern down.
 - It lights up by itself when hung: light radius, burn rate and warmth all use the vanilla numbers, so the lantern on your belt really burns fuel and really gives off heat.
 - Hanging does not use your hands: you can still carry a rifle, hold a flare, climb a rope, light a fire and open doors.
+- Hanging it and taking it down both play the vanilla metal clink of gear being drawn and stowed; the ignite sound is queued after the hang sound, so the two never fire in the same frame.
 
 **Switching it on**
 
 - Press `L` while the lantern is hung. Nothing pops up in the middle of the screen — you can see whether the lantern is lit.
+- Igniting carries its own sound — two drags of the flint, then the flame comes up — and the light rides along: a short flash on the first drag, a second on the second, then it stays on as the wick settles. Putting it out is just as immediate: the light goes the moment the sound ends, no three-second wait.
 - `L` does nothing when the lantern is not hung (in the bag or in your hands), so it never steals a vanilla key.
 - With an empty tank, `L` will not produce a lit lantern out of nothing.
 
@@ -58,6 +60,11 @@ Settings live under **Options → Mod Settings → Lantern Belt**. The settings 
 | 开关提灯（仅挂腰时） / lantern key | Works only while the lantern is hung; pressing it at any other time does nothing | `L` |
 | 挂上去就点亮 / light up on hang | Turn it off and the lantern stays unlit when hung, so you light it yourself | On |
 | 收起时熄灯 / extinguish on take down | Turn it off and the lantern keeps burning fuel after it goes back into the bag | On |
+| 开关灯音效 / lamp audio | The ignite sound, the burning loop and the extinguish sound. Off silences all three; the flash when it lights still happens | On |
+| 点火声音量 / ignite volume | Volume of the ignite clip only. The clip ships inside the mod and is unpacked to `Mods/LanternBelt_ignite.wav`, which you can overwrite with a WAV of your own (a mod update puts the shipped one back); it does not follow the game's own SFX slider | 1 |
+| 关灯延迟（秒） / put-out delay | How long the extinguish sound runs before the light actually goes out. Bigger leaves a longer glow after the sound, smaller is snappier, 0 is immediate | 2.8 |
+| 悬挂 / 收起的装备声 / gear audio | The vanilla metal clink when the lantern is drawn out and when it is put away. Off silences both and leaves the ignite sound alone | On |
+| 点火闪灭 / ignite flicker | The light flashes twice with the strike and then burns steady, like a match catching. Off lights it up in one go | On |
 | 读档后自动恢复 / restore after loading | After a load or a scene change, put the hung lantern back on your belt automatically | On |
 | 保留原版「装备」行为 / keep vanilla "Equip" | On restores the vanilla "Equip" button and disables hanging entirely | Off |
 | 挂点基准 / anchor reference | "Player body" follows your body; "Camera" follows the view and shakes more while walking | Player body |
@@ -89,16 +96,11 @@ The default spot is your left hip. If the lantern floats in the air, clips into 
 
 Delete `TheLongDark/Mods/LanternBelt.dll`.
 
-No field is written into the game save. A lantern that was hung turns into a lit lantern in your bag and keeps burning fuel under vanilla rules — take it down before you uninstall.
-
-The hung state lives in a separate file under `Mods/ModData/`; nothing reads it once the mod is gone, so it does not affect your save.
-
-See [ChangeLog.md](ChangeLog.md) for version history.
+No field is written into the game save. A lantern that was hung turns into a lit lantern in your bag and keeps burning fuel under vanilla rules — take it down before you uninstall. The hung state lives in a separate file under `Mods/ModData/`; nothing reads it once the mod is gone, so it does not affect your save. Version history is in [ChangeLog.md](ChangeLog.md).
 
 ### Compatibility
 
-- It only takes over the hung lantern's position, rendering and on/off state while that lantern is on your belt; the rest of the time the game is untouched. Item definitions, fuel burn rate and light intensity are not modified.
-- No known conflicts with other gear mods (no systematic combination testing was done). What would really clash is another mod that also takes over the lantern's on/off switch.
+- It only takes over the hung lantern's position, rendering and on/off state while that lantern is on your belt; the rest of the time the game is untouched. Item definitions, fuel burn rate and light intensity are not modified. No known conflicts with other gear mods — what would really clash is another mod that also takes over the lantern's on/off switch.
 
 ### FAQ
 
@@ -136,10 +138,12 @@ MIT — see [LICENSE](LICENSE).
 - 悬挂时屏幕右下角会画出一根白色油量条，条下方写着「灯油 87% · 耐久 100%」；卸下后整块消失。
 - 挂上去自动点燃：照明范围、烧油速度、取暖效果全部沿用原版数值，腰上那盏灯是真的在烧油、真的在散热。
 - 挂腰时不占用手部：可以同时拿步枪、信号棒、爬绳、生火、开门。
+- 悬挂与收起都会响原版拿取 / 收纳装备的金属碰响；点火声排在悬挂声之后，两者不会挤在同一帧。
 
 **开关灯**
 
 - 挂腰状态下按 `L` 开关提灯，屏幕中间不会弹任何红字提示——灯亮不亮肉眼可见。
+- 点火自带一整段声音：两下打火石摩擦，随后灯芯燃起、火焰升上来；灯光跟着走——第一下短亮、第二下再短亮、火焰稳住时转长亮。关灯同样干脆：熄灭声一落灯就灭，不会出现「声音早没了、灯还亮着」的空档。
 - 没挂腰（收起或拿在手上）时 `L` 完全不响应，不会抢游戏原有按键。
 - 灯里没油时按 `L` 不会点出一盏空灯。
 
@@ -169,6 +173,11 @@ MIT — see [LICENSE](LICENSE).
 | 开关提灯（仅挂腰时） | 只在提灯挂腰时生效，其余时候按了没有反应 | `L` |
 | 挂上去就点亮 | 关掉则挂上时保持熄灭，需要按开关灯键自己点 | 开 |
 | 收起时熄灯 | 关掉则收进背包后灯继续烧油 | 开 |
+| 开关灯音效 | 点火音、燃烧声与熄灭音。关掉后三者全静音，点火时灯光照常闪一下 | 开 |
+| 点火声音量 | 只管点火那一段的音量。音频随 mod 自带，会解包到 `Mods/LanternBelt_ignite.wav`，你可以用同名 WAV 覆盖它（mod 更新后会换回自带那版）；它不跟着游戏音效音量走 | 1 |
+| 关灯延迟（秒） | 熄灭声响起之后隔多久灯真正灭掉。调大让声音与灯灭之间留余韵，调小更干脆，调到 0 就是立刻灭 | 2.8 |
+| 悬挂 / 收起的装备声 | 原版拿出、收纳装备时那一声金属碰响。关掉后这两个动作静音，点火音不受影响 | 开 |
+| 点火闪灭 | 点火时灯光跟着声效「短亮—短亮—长亮」，像擦火柴。关掉后一次点亮 | 开 |
 | 读档后自动恢复 | 读档 / 换场景后自动把提灯重新挂回腰上，亮灭照旧 | 开 |
 | 保留原版「装备」行为 | 开着则物品栏按钮恢复原版「装备」，悬挂功能整体失效 | 关 |
 | 挂点基准 | 「玩家身体」跟着身体走；「相机」跟视角走，晃动更明显 | 玩家身体 |
@@ -200,16 +209,13 @@ MIT — see [LICENSE](LICENSE).
 
 删掉 `TheLongDark/Mods/LanternBelt.dll` 即可。
 
-存档里不会留下本 mod 的字段。已挂腰的提灯在卸载后会变回「背包里一盏点着的灯」，按原版规则它会继续烧油——记得先收起再卸载。
-
-悬挂记录由 `ModData` 存在 `Mods/ModData/` 下的独立文件里，本 mod 卸载后没人再读它，不影响存档。
+存档里不会留下本 mod 的字段。已挂腰的提灯在卸载后会变回「背包里一盏点着的灯」，按原版规则它会继续烧油——记得先收起再卸载。悬挂记录由 `ModData` 存在 `Mods/ModData/` 下的独立文件里，本 mod 卸载后没人再读它，不影响存档。
 
 更新记录见 [ChangeLog.md](ChangeLog.md)。
 
 ### 兼容性
 
-- 只在提灯挂腰的那段时间里接管提灯的位置、渲染与开关状态，其余时候对游戏没有任何改动；不修改物品定义、燃油消耗速率与光照强度。
-- 与其它装备类 mod 无已知冲突（未做系统性组合测试）；真正会互相影响的是也去接管提灯开关的 mod。
+- 只在提灯挂腰的那段时间里接管提灯的位置、渲染与开关状态，其余时候对游戏没有任何改动；不修改物品定义、燃油消耗速率与光照强度。与其它装备类 mod 无已知冲突，真正会互相影响的也只有同样去接管提灯开关的 mod。
 
 ### 常见问题
 

@@ -9,22 +9,10 @@ namespace LanternBelt.Core;
 /// <summary>
 /// 挂腰时在屏幕右下角补一块「灯油」读数：一根白色条 + 一行文字。
 ///
-/// 为什么自己画：原版只在物品**拿在手上**时由 <c>EquipItemPopup</c> 画那根耐久条，
-/// <c>Update</c> 里按类型分派取数（<c>TorchItem.GetBurnProgress</c> /
-/// <c>FlareItem.GetNormalizedBurnTimeLeft</c> / <c>FlashlightItem.GetNormalizedCharge</c> /
-/// <c>NoiseMakerItem.GetNormalizedWickTimeLeft</c> / 兜底 <c>GearItem.GetNormalizedCondition</c>），
-/// 其中**没有提灯分支**——灯挂到腰上以后，手是空的，这条信息就彻底断了。
-///
-/// 定位**不依赖** <c>EquipItemPopup</c>：那几个序列化字段在 2.55 里可能拿不到
-/// （<c>m_ObjectDuration</c> 为空时旧实现退回面板原点，整块就飘到屏幕中央）。
-/// 这里让 UI 相机把视口右下角投到面板本地空间，条与文字都相对这个角摆放，
-/// 分辨率与 UI 缩放都跟着走。
-///
-/// 层级是三层：容器（空物体）→ 文字 / 条。容器只承载位置，**不能带任何 <c>UIWidget</c>**，
-/// 否则「排文字」那一句写的就是容器自己的 <c>localPosition</c>，边距会当场失效。
-///
-/// 条的外观仍尽量克隆原版那个模板，atlas / 九宫格边框 / 颜色原样继承；
-/// 宽度再按设置拉长到比文字更长。
+/// 原版只在物品拿在手上时由 <c>EquipItemPopup</c> 画耐久条，且按类型分派取数、没有提灯分支——
+/// 灯挂到腰上以后这条信息就断了。定位不依赖原版控件，按屏幕右下角投影算；层级固定三层：
+/// 空容器 → 文字 / 条，容器不能带任何 <c>UIWidget</c>。取数清单与逐条踩坑见
+/// <c>docs/DEVELOPMENT.md</c> §5。
 /// </summary>
 internal static class HudReadout
 {
@@ -200,13 +188,11 @@ internal static class HudReadout
 	}
 
 	/// <summary>
-	/// 把当前设置直接写进已经建好的对象：字号、条宽、条粗、文字落点、整块位置。
+	/// 把当前设置写进已经建好的对象：字号、条宽、条粗、文字落点、整块位置。
 	///
-	/// 每帧调一次，但每个值都先跟「上次写进去的值」比过，没变就不赋值——
-	/// 改 `UIWidget.width` / `UILabel.fontSize` / `Transform.localPosition`
-	/// 都会让 NGUI 重建网格，每帧无脑写会把 NGUI 打爆。
-	///
-	/// 顺序不能换：先定条尺寸 → 再排条与文字并量出整块大小 → 最后按整块大小锚定容器。
+	/// 每帧调一次，但每个值都先跟「上次写进去的值」比过，没变就不赋值——写
+	/// <c>UIWidget.width</c> / <c>UILabel.fontSize</c> / <c>Transform.localPosition</c>
+	/// 都会让 NGUI 重建网格。顺序也不能换：先定条尺寸，再排条与文字并量出块大小，最后按块大小锚定容器。
 	/// </summary>
 	private static void ApplyLayout(Settings cfg)
 	{
@@ -408,9 +394,9 @@ internal static class HudReadout
 	/// <summary>
 	/// 屏幕右下角在 HUD 面板本地空间的坐标（不含任何边距）。
 	///
-	/// 主路径是**让 UI 相机把视口右下角投到世界空间**再转本地——单位天然正确，
-	/// 不受 UIRoot 缩放风格、面板偏移的影响。拿不到相机时退回
-	/// <c>UIRoot.activeHeight</c> 乘屏幕宽高比（2.55 的 <c>UIRoot</c> **没有 <c>activeWidth</c>**）。
+	/// 主路径让 UI 相机把视口右下角投到世界空间再转本地——单位天然正确，不受 UIRoot 缩放风格与
+	/// 面板偏移影响。拿不到相机时退回 <c>UIRoot.activeHeight</c> 乘屏幕宽高比（<c>UIRoot</c>
+	/// 没有 <c>activeWidth</c>）。
 	/// </summary>
 	private static Vector3 CornerLocal(Transform hudRoot)
 	{
@@ -738,12 +724,9 @@ internal static class HudReadout
 	/// <summary>
 	/// 按设置把条拉成「目标宽度 × 目标粗细」。
 	///
-	/// 不是「乘一个比例」，而是**按基线包围盒绝对映射**：
-	/// 每个控件的 `width` / `height` / `localPosition` 都按
-	/// `目标 / 基线` 独立换算。这样最终包围盒一定等于设置里的数字，
-	/// 反复拖滑条也不会累积误差，也不怕模板本身是个又大又怪的白块。
-	///
-	/// 目标宽度还会被抬到「比下面那行文字更长」，免得文字顶到条两头。
+	/// 不是乘比例，而是按基线包围盒绝对映射：各控件的 <c>width</c> / <c>height</c> /
+	/// <c>localPosition</c> 按 `目标 / 基线` 独立换算，所以最终包围盒一定等于设置值，反复拖滑条
+	/// 也不累积误差。目标宽度还会抬到比下面那行文字更长，免得文字顶到条两头。
 	/// </summary>
 	private static void ApplyBarSize(Settings cfg)
 	{
